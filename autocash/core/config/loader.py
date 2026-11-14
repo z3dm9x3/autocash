@@ -125,7 +125,8 @@ def _rules(cfg: Config, src: SourceCfg) -> list[CompiledRule]:
             if override:
                 rule = RuleCfg.model_validate(_deep_merge(rule.model_dump(), override))
             rules.append(rule)
-        unknown = (set(src.disabled_rules) | set(src.rule_overrides)) - {r.id for r in cfg.templates[src.template].rules}
+        template_ids = {r.id for r in cfg.templates[src.template].rules}
+        unknown = (set(src.disabled_rules) | set(src.rule_overrides)) - template_ids
         if unknown:
             raise RuleError(f"source {src.chat_id}: overrides for unknown rules {sorted(unknown)}")
     rules.extend(src.extra_rules)

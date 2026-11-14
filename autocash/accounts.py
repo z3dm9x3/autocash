@@ -57,8 +57,8 @@ def _parse(folder: Path, values: dict[str, str | None]) -> Account:
         name=folder.name,
         folder=folder,
         kind=kind,
-        api_id=int(values["TG_API_ID"]),
-        api_hash=values["TG_API_HASH"].strip(),
+        api_id=int(values.get("TG_API_ID") or ""),
+        api_hash=(values.get("TG_API_HASH") or "").strip(),
         phone=(values.get("TG_PHONE") or "").strip(),
         bot_token=(values.get("TG_BOT_TOKEN") or "").strip(),
     )

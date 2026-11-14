@@ -1,0 +1,101 @@
+# Autocash configuration example (FT-13.1). Copy the directory to `config/` and edit.
+# A directory of *.yaml files is merged in name order; one file works as well.
+# Every value marked OPEN-QUESTION is a default until section 8 of the TZ is answered
+# (see docs/open_questions.md). Chat and user ids below are placeholders.
+
+service_chats:
+  logs: -1009000000001    # errors, warnings, new chats without a role
+  debug: -1009000000002   # periodic summary of `unknown` messages
+
+# user_id -> global roles (FT-12.1). Source-bound roles are set in sources[].senders.
+users:
+  1000001: [admin]
+
+defaults:
+  unknown_chat_policy: meta          # a new chat without a role: store the fact and the time only
+  policy_by_role: {channel: presence, logs: ignore, debug: ignore}
+
+sources:
+  - chat_id: -1001000000001
+    name: Касса 1
+    roles: [kassa]
+    template: kassa
+    priority: 1                      # 1 is the highest; still accepted when the buffer is full
+    senders: {5001: kassa_bot, 6001: casher}
+  - chat_id: -1001000000002
+    name: Касса 2
+    roles: [kassa]
+    template: kassa
+    senders: {5001: kassa_bot}
+    disabled_rules: []               # ids of template rules switched off for this source
+    rule_overrides: {}               # rule id -> fields of the rule to override
+
+# Forms of features for the Extractor (FT-3.4). No meaning here: that is the sorter's job.
+manifest:
+  number_min_len: 4
+  number_max_len: 20
+  markers: ["✅", "❌", "🔴", "🟢", "🟡", "⚠️"]
+  dictionaries:
+    deposit: [депозит]
+  subfields:
+    Пользователь: {regex: '^(?P<name>\S+)\s+ID:\s*(?P<id>\d+)$'}
+    Успешных депозитов: {regex: '^(?P<marker>\S+)\s+(?P<count>\d+)\s+\(всего:\s*(?P<total>\d+)\)$'}
+    Метод оплаты: {regex: '^(?P<method>.*?)\s+(?P<min>\d[\d ]*\d)\s*-\s*(?P<max>\d[\d ]*\d)$'}
+  commands:
+    bare: [scam, unban]              # commands accepted without a leading slash (FT-12.3)
+
+# Sorting rules grouped into templates (FT-6.1..6.3). The first matching rule wins.
+# The real kassa template is the subject of stage 2 and needs recorded messages (NFT-21).
+templates:
+  kassa:
+    rules:
+      - id: deposit_request
+        type: deposit.request
+        when: {sender_role: [kassa_bot], header: ["ДЕПОЗИТ ТРЕУГОЛЬНИК", "ДЕПОЗИТ ПРЕДУСТАНОВЛЕННАЯ СУММА"]}
+        fields: {deposit_id: "Deposit ID", mel_id: "Номер счёта", tgid: "Пользователь.id"}
+        order_key: [deposit_id]
+        priority: 3
+        text_ttl_days: 90            # OPEN-QUESTION: FT-5.3
+
+buffer:
+  retention_hours: 72                # OPEN-QUESTION: FT-4.3
+  soft_limit_mb: 512
+  hard_limit_mb: 1024
+  top_priority: 1
+
+uploader:
+  batch_interval_ms: 100             # A-1
+  batch_max: 500
+
+writer:
+  flush_interval_ms: 20
+  batch_max: 500
+
+queue:
+  maxsize: 10000
+  live_threshold: 100
+  backfill_rate_per_s: 50
+  commit_window: 500
+  warn_len: 5000
+  warn_lag_s: 5.0
+
+# Modules are listed explicitly. `demo` counts messages and answers /ping: testing only.
+modules: {}
+
+output:
+  concurrency: 1
+  min_interval_ms: 1000
+  max_attempts: 5
+  ttl_s: {command_reply: 300, client_reply: 1800, notify: 3600, bulk: 86400}   # OPEN-QUESTION: FT-9.6
+
+retention:
+  default_text_ttl_days: 90          # OPEN-QUESTION: FT-5.3
+  trace_days: 30                     # OPEN-QUESTION: FT-11.11
+
+sorter:
+  unknown_summary_interval_s: 3600
+
+# OPEN-QUESTION: FT-11.7 - time norms per stage, seconds (used from stage 1c)
+stage_norms_s: {buffered: 0.2, in_pg: 0.5, sorted: 0.7, module_queued: 1.0, module_done: 10.0}
+
+report_timezone: Europe/Moscow       # NFT-19: day boundary for reports; stored timestamps are UTC

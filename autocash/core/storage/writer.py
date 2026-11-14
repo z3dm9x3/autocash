@@ -12,7 +12,7 @@ import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar
+from typing import Any
 
 import asyncpg
 
@@ -23,7 +23,6 @@ log = logging.getLogger(__name__)
 WriteFn = Callable[[asyncpg.Connection], Awaitable[Any]]
 AfterFn = Callable[[Any], None]
 ErrorFn = Callable[[BaseException], None]
-E = TypeVar("E")
 
 
 @dataclass(slots=True)
@@ -51,6 +50,14 @@ class BatchWriter:
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._run(), name="batch-writer")
+        self._task.add_done_callback(self._on_done)
+
+    def _on_done(self, task: asyncio.Task[None]) -> None:
+        if self._stopping:
+            return
+        exc = None if task.cancelled() else task.exception()
+        log.critical("batch writer stopped unexpectedly: cancelled=%s error=%r", task.cancelled(), exc,
+                     exc_info=exc)
 
     async def stop(self, *, drain: bool = True) -> None:
         self._stopping = True
@@ -107,7 +114,20 @@ class BatchWriter:
             batch = [self._items.popleft() for _ in range(min(len(self._items), self.batch_max))]
             if self._items:
                 self._urgent.set()
-            await self._write(batch)
+            try:
+                await self._write(batch)
+            except BaseException as exc:
+                task = asyncio.current_task()
+                if isinstance(exc, asyncio.CancelledError) and (self._stopping or (task and task.cancelling())):
+                    raise  # a real cancellation of the writer itself
+                if not isinstance(exc, Exception | asyncio.CancelledError):
+                    raise
+                # Nothing may stop the writer: every sync caller would wait forever. The batch
+                # goes back to the head of the queue; its functions are safe to repeat.
+                log.critical("batch writer: unexpected %r, batch of %d is retried", exc, len(batch), exc_info=exc)
+                self._items.extendleft(reversed(batch))
+                self._urgent.set()
+                await asyncio.sleep(0.5)
 
     async def _write(self, batch: list[_Item]) -> None:
         loop = asyncio.get_running_loop()
@@ -168,13 +188,13 @@ class BatchWriter:
 
 
 @dataclass(slots=True)
-class _Group(Generic[E]):
+class _Group[E]:
     entries: list[E] = field(default_factory=list)
     futures: list[asyncio.Future[Any] | None] = field(default_factory=list)
     closed: bool = False
 
 
-class Aggregator(Generic[E]):
+class Aggregator[E]:
     """Collects entries from many callers into ONE writer item (one round of statements).
 
     `write_batch(conn, entries)` returns a list of per-entry results; an Exception instance in

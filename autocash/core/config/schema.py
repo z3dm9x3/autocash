@@ -134,6 +134,8 @@ class QueueCfg(Strict):
     maxsize: int = 10000
     live_threshold: int = 100
     backfill_rate_per_s: float = 50
+    # Events of one module that may wait for their commit at the same time (A-4).
+    commit_window: int = 500
     warn_len: int = 5000
     warn_lag_s: float = 5.0
 

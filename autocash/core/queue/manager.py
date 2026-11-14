@@ -218,11 +218,12 @@ class _Commit:
 
 
 class _Runner:
-    def __init__(self, module: Module, mq: ModuleQueue, concurrency: int, timeout_s: float) -> None:
+    def __init__(self, module: Module, mq: ModuleQueue, concurrency: int, timeout_s: float, window: int) -> None:
         self.module = module
         self.mq = mq
         self.concurrency = concurrency
         self.timeout_s = timeout_s
+        self.window = asyncio.Semaphore(max(window, concurrency))
         self.processed = 0
         self.failed = 0
         self.saved_mark = -1
@@ -246,6 +247,7 @@ class QueueManager:
         self._runners: dict[str, _Runner] = {}
         self._match_cache: dict[str, list[_Runner]] = {}
         self._tasks: list[asyncio.Task[None]] = []
+        self._finishing: set[asyncio.Task[None]] = set()
         # Marks, module writes and trace rows of many events share one round of statements.
         self._commits: Aggregator[_Commit] = Aggregator(writer, self._write_commits, urgent=True)
         self._queued: Aggregator[dict[str, Any]] = Aggregator(writer, self._write_queued, urgent=False)
@@ -265,6 +267,7 @@ class QueueManager:
             module, mq,
             concurrency=(mcfg.concurrency if mcfg and mcfg.concurrency else module.concurrency),
             timeout_s=(mcfg.timeout_s if mcfg and mcfg.timeout_s else module.timeout_s),
+            window=cfg.queue.commit_window,
         )
         self._match_cache.clear()
 
@@ -369,9 +372,10 @@ class QueueManager:
         self._tasks.append(asyncio.create_task(self._housekeeping(), name="queue-housekeeping"))
 
     async def stop(self) -> None:
-        for task in self._tasks:
+        finishing = list(self._finishing)
+        for task in [*self._tasks, *finishing]:
             task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        await asyncio.gather(*self._tasks, *finishing, return_exceptions=True)
         self._tasks = []
 
     # ---- workers ---------------------------------------------------------------------------
@@ -387,16 +391,25 @@ class QueueManager:
                 except TimeoutError:
                     pass
                 continue
+            # The concurrency limit covers handle() only. The commit is awaited in a separate task
+            # so that one writer round can carry many events; the ordering key stays busy until
+            # the commit (FT-7.5), and the window bounds events waiting for it.
+            await runner.window.acquire()
             try:
-                await self._process(runner, rec)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("module %s: failed to record the result of %s", runner.module.name, rec.trace_id)
-            finally:
+                ctx, queued_at, started, failure = await self._handle(runner, rec)
+            except BaseException:
+                runner.window.release()
                 mq.release(rec)
+                raise
+            task = asyncio.create_task(
+                self._finish(runner, rec, ctx, queued_at, started, failure), name=f"commit-{runner.module.name}"
+            )
+            self._finishing.add(task)
+            task.add_done_callback(self._finishing.discard)
 
-    async def _process(self, runner: _Runner, rec: MessageRecord) -> None:
+    async def _handle(
+        self, runner: _Runner, rec: MessageRecord
+    ) -> tuple[Context, float, float, tuple[Reason, str] | None]:
         module = runner.module
         rt = self._store.current
         mcfg = rt.config.modules.get(module.name)
@@ -413,6 +426,28 @@ class QueueManager:
         except Exception as exc:
             log.exception("module %s: error on %s", module.name, rec.trace_id)
             failure = (Reason.MODULE_ERROR, repr(exc)[:500])
+        return ctx, queued_at, started, failure
+
+    async def _finish(
+        self, runner: _Runner, rec: MessageRecord, ctx: Context, queued_at: float, started: float,
+        failure: tuple[Reason, str] | None,
+    ) -> None:
+        try:
+            await self._record(runner, rec, ctx, queued_at, started, failure)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("module %s: failed to record the result of %s", runner.module.name, rec.trace_id)
+        finally:
+            runner.window.release()
+            runner.mq.release(rec)
+
+    async def _record(
+        self, runner: _Runner, rec: MessageRecord, ctx: Context, queued_at: float, started: float,
+        failure: tuple[Reason, str] | None,
+    ) -> None:
+        module = runner.module
+        rt = self._store.current
         if failure is None:
             entry = _Commit(rec.trace_id, module.name, rec.ingest_id, queued_at, started, ctx.ops, ctx.drafts,
                             rt.config.output.ttl_s, rt.version)

@@ -70,7 +70,9 @@ class FakeTelegram:
         self._difference_limit = difference_limit
 
     # ---- setup -----------------------------------------------------------------------------
-    def add_chat(self, chat_id: int, kind: ChatKind = "supergroup", title: str = "", members: tuple[int, ...] = ()) -> FakeChat:
+    def add_chat(
+        self, chat_id: int, kind: ChatKind = "supergroup", title: str = "", members: tuple[int, ...] = ()
+    ) -> FakeChat:
         chat = FakeChat(chat_id, kind, title or f"chat {chat_id}", set(members))
         self.chats[chat_id] = chat
         return chat
@@ -105,8 +107,8 @@ class FakeTelegram:
             if client is None or client.handler is None or not client.online:
                 continue
             task = asyncio.ensure_future(client.handler(self._event(kind, msg, chat, account_id)))
-            self._tasks.add(task)  # type: ignore[arg-type]
-            task.add_done_callback(self._tasks.discard)  # type: ignore[arg-type]
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
 
     def post(self, chat_id: int, sender_id: int | None, text: str, **kw: Any) -> FakeMessage:
         chat = self.chats[chat_id]
@@ -170,7 +172,9 @@ class FakeTelegram:
         self.sent.append((account_id, chat_id, text, msg_id))
         return msg_id
 
-    def get_channel_difference(self, account_id: int, chat_id: int, pts: int, limit: int = 100) -> tuple[list[RawEvent], int, bool, float]:
+    def get_channel_difference(
+        self, account_id: int, chat_id: int, pts: int, limit: int = 100
+    ) -> tuple[list[RawEvent], int, bool, float]:
         """Returns (events, new_pts, final, timeout) like updates.getChannelDifference."""
         self._api_call(account_id)
         chat = self.chats.get(chat_id)
@@ -204,6 +208,8 @@ class FakeClient:
         await asyncio.sleep(0)
         return self.server.send(self.account_id, chat_id, text, random_id, reply_to)
 
-    async def get_channel_difference(self, chat_id: int, pts: int, limit: int = 100) -> tuple[list[RawEvent], int, bool, float]:
+    async def get_channel_difference(
+        self, chat_id: int, pts: int, limit: int = 100
+    ) -> tuple[list[RawEvent], int, bool, float]:
         await asyncio.sleep(0)
         return self.server.get_channel_difference(self.account_id, chat_id, pts, limit)

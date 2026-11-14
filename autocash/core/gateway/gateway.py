@@ -125,10 +125,9 @@ class Gateway:
             self._remember(key, hash_)
             is_command = ex.command is not None and not ev.anonymous
         extracted = time.time()
+        origin = "external"
         if own_sender:
             origin = "system" if self._own.is_own(ev.chat_id, hash_) else "human"
-        else:
-            origin = "external"
         date_ts = ev.date.timestamp()
         if exact or ev.chat_kind == "private":
             dedup_key, dedup_exact = f"{ev.chat_id}:{ev.msg_id}", True

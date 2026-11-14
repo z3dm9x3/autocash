@@ -112,7 +112,9 @@ AppFactory = Callable[..., App]
 
 
 @pytest.fixture
-async def app_factory(tmp_path: Path, pg_dsn: str, fake: FakeTelegram, config: dict[str, Any]) -> AsyncIterator[AppFactory]:
+async def app_factory(
+    tmp_path: Path, pg_dsn: str, fake: FakeTelegram, config: dict[str, Any]
+) -> AsyncIterator[AppFactory]:
     apps: list[App] = []
 
     def factory(*, modules: list[Module] | None = None, cfg: dict[str, Any] | None = None) -> App:

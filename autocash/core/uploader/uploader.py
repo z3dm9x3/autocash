@@ -208,7 +208,9 @@ class Uploader:
         if payloads:
             for rec in await conn.fetch(_INSERT_MESSAGES, json.dumps(payloads, ensure_ascii=False)):
                 inserted[rec["trace_id"]] = rec["ingest_id"]
-        await conn.execute(_INSERT_SEEN, json.dumps(payloads + seen_only, ensure_ascii=False))
+        # Only the key columns travel here: the full payload (text, features) is sent once.
+        seen = [{k: p[k] for k in _SEEN_FIELDS} for p in (*payloads, *seen_only)]
+        await conn.execute(_INSERT_SEEN, json.dumps(seen))
         traces = []
         records: list[MessageRecord] = []
         for p in payloads:
@@ -241,6 +243,9 @@ class Uploader:
         trace = {**_trace_fields(p), "version": None, "event": "delete", "ingest_id": None,
                  "buffered_at": row.buffered_at, "waited_reason": row.wait_reason, "status": "processed"}
         await conn.execute(_INSERT_TRACE, json.dumps([trace]))
+
+
+_SEEN_FIELDS = ("scope_id", "chat_id", "msg_id", "version", "account_id", "received_at")
 
 
 def _trace_fields(p: dict[str, Any]) -> dict[str, Any]:

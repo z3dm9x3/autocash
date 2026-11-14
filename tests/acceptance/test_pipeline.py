@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any
 
 import asyncpg
@@ -11,6 +12,10 @@ import asyncpg
 from autocash.core.app import App
 from tests.conftest import ACCOUNT, BOT, CASHER, DEPOSIT_TEXT, KASSA, KASSA2, PLAYER
 from tests.fake_telegram.server import FakeTelegram
+
+# The stage prompt does not name a rate for criterion 1. 50 msg/s is ~40 times the load of NFT-4
+# after tenfold growth (100k messages a day ~ 1.2 msg/s); see docs/decisions.md, D-1a-5.
+LIVE_RATE_PER_S = 50
 
 
 async def fetch(app: App, sql: str, *args: Any) -> list[asyncpg.Record]:
@@ -47,10 +52,14 @@ async def test_message_goes_through_the_whole_chain(app: App, fake: FakeTelegram
 async def test_latency_p95_under_one_second_on_1000_messages(app: App, fake: FakeTelegram) -> None:
     """Criterion 1: accepted -> start of module processing, p95 <= 1 s (NFT-6)."""
     total = 1000
-    for i in range(total):
-        fake.post(KASSA if i % 2 else KASSA2, BOT, DEPOSIT_TEXT.format(deposit_id=i))
-        if i % 5 == 4:
-            await asyncio.sleep(0.01)  # ~500 messages per second
+    started = time.perf_counter()
+    posted = 0
+    while posted < total:
+        due = min(total, int((time.perf_counter() - started) * LIVE_RATE_PER_S) + 1)
+        while posted < due:
+            fake.post(KASSA if posted % 2 else KASSA2, BOT, DEPOSIT_TEXT.format(deposit_id=posted))
+            posted += 1
+        await asyncio.sleep(0.005)
     await app.idle(timeout=60)
 
     rows = await fetch(

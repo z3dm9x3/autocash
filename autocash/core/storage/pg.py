@@ -99,7 +99,9 @@ class Database:
                 return
             except Exception as exc:
                 if not is_connection_error(exc):
-                    raise
+                    # A failure to connect that we do not recognise is still "unavailable": the
+                    # caller must keep waiting, not die. It is logged with its traceback.
+                    log.error("PostgreSQL: unexpected error while connecting: %r", exc, exc_info=exc)
                 self.mark_down(exc)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, max_retry_s)
