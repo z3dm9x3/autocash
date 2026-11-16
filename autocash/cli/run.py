@@ -29,14 +29,19 @@ from autocash.core.telegram.api import TelegramClient
 from autocash.core.telegram.telethon_client import TelethonClient
 from autocash.modules.api import Module
 from autocash.modules.demo.module import DemoModule
+from autocash.modules.deposits.module import DepositsModule
+from autocash.modules.players.module import PlayersModule
 
 log = logging.getLogger("autocash")
 ROOT = Path(__file__).resolve().parents[2]
 
 
+AVAILABLE: dict[str, type[Module]] = {"demo": DemoModule, "players": PlayersModule, "deposits": DepositsModule}
+
+
 def build_modules(app_config_modules: dict[str, object]) -> list[Module]:
-    # The demo module answers /ping in real chats, so it runs only when the config names it.
-    return [DemoModule()] if "demo" in app_config_modules else []
+    # A module runs only when the configuration names it (the demo one answers /ping in real chats).
+    return [cls() for name, cls in AVAILABLE.items() if name in app_config_modules]
 
 
 def client_from_session(data: SessionData) -> TelegramClient:
@@ -58,8 +63,7 @@ async def run(config: Path, data: Path) -> int:
         log.error("pool.sessions_dir is not set in the configuration: there are no accounts to run")
         return 2
     for module in build_modules(dict(app.store.current.config.modules)):
-        app.queues.register(module)
-        app.pool.reconcilers.append(module.reconcile)
+        app.add_module(module)
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()

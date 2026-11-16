@@ -133,7 +133,7 @@ class Module(ABC):
     def bind(self, services: Services) -> None:
         self.services = services
 
-    async def periodic(self) -> None:
+    async def periodic(self) -> None:  # noqa: B027 - optional hook, a no-op unless the module needs it
         """Periodic work of the module (sweeps, reconciliation); runs outside event handling."""
 
     def trace_resolver(self) -> TraceResolver | None:

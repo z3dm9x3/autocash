@@ -80,7 +80,18 @@ queue:
   warn_lag_s: 5.0
 
 # Modules are listed explicitly. `demo` counts messages and answers /ping: testing only.
-modules: {}
+# `deposits` and `players` need the kassa template rules (types deposit.*, method.*): the
+# template must be written from recorded kassa messages (tests/fixtures/messages/README.md).
+modules:
+  deposits:
+    config:
+      binding: [reply, confirmation]   # OPEN-QUESTION: FT-З.9 - how requisites are tied to a request
+      reconcile_after_min: 30          # OPEN-QUESTION: FT-З.10 - X
+      stuck_after_h: 24                # OPEN-QUESTION: FT-З.11 - Y
+      unknown_share_max: 0.05          # OPEN-QUESTION: stage 2 - acceptable share of unknown
+  players:
+    config:
+      merge_confirm_threshold: 6       # OPEN-QUESTION: FT-И.3 - larger joins wait for a staff decision
 
 # Pool of 1-10 accounts (FT-1.x). Accounts are the encrypted session files of this directory:
 # a file appearing adds an account, a file vanishing removes it, without a restart.
