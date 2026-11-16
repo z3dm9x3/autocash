@@ -1,0 +1,14 @@
+{% extends "base.html" %}{% block title %}трассы{% endblock %}
+{% block body %}
+<h2>Трасса (/trace)</h2>
+<form>Ссылка на сообщение, trace_id или ключ: <input name="q" value="{{ q }}" size="60"> <button>Найти</button></form>
+{% if text %}<pre>{{ text }}</pre>{% endif %}
+<h3>Список задач</h3>
+<form>Чат <input name="chat" value="{{ f.chat }}" size="16"> Модуль <input name="module" value="{{ f.module }}" size="10">
+Аккаунт <input name="account" value="{{ f.account }}" size="10"> Код причины <input name="reason" value="{{ f.reason }}" size="16">
+Статус <input name="status" value="{{ f.status }}" size="10"> За часов <input name="hours" value="{{ f.hours or 24 }}" size="4"> <button>Показать</button></form>
+<table><tr><th>Принято</th><th>Чат / сообщение</th><th>Аккаунт</th><th>Тип</th><th>Модуль</th><th>Статус</th><th>Причина</th><th>Итого, с</th><th></th></tr>
+{% for r in rows %}<tr><td>{{ r.accepted_at|ts }}</td><td>{{ r.chat_id }} / {{ r.msg_id }}</td><td>{{ r.account_id }}</td><td>{{ r.msg_type or '' }}</td>
+<td>{{ r.module or '' }}</td><td>{{ r.m_status or r.status }}</td><td>{{ r.m_reason or r.reason_code or '' }}</td><td>{{ '%.3f'|format(r.total_s) if r.total_s is not none else '' }}</td>
+<td><a href="/trace?q={{ r.trace_id }}">трасса</a></td></tr>{% endfor %}</table>
+{% endblock %}

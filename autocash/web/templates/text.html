@@ -1,0 +1,5 @@
+{% extends "base.html" %}{% block title %}{{ title }}{% endblock %}
+{% block body %}<h2>{{ title }}</h2>
+{% if path == '/stuck' %}<form>Этап: <input name="stage" placeholder="in_pg, sorted, module_done"> <button>Показать</button></form>{% endif %}
+{% if path == '/metrics' %}<form>Аргументы: <input name="args" placeholder="как у /metrics"> <button>Показать</button></form>{% endif %}
+<pre>{{ text }}</pre>{% endblock %}

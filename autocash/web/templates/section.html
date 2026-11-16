@@ -1,0 +1,11 @@
+{% extends "base.html" %}{% block title %}раздел {{ key }}{% endblock %}
+{% block body %}
+<h2>Раздел <code>{{ key }}</code></h2>
+<p class="muted">Текст раздела в YAML-файле. Изменение проходит ту же проверку, что правка файла и /reload; невалидное отклоняется, действующая версия не меняется.</p>
+{% if 'web_edit' in rights %}
+<form method="post" action="/config/section"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="key" value="{{ key }}">
+<input type="hidden" name="base_version" value="{{ version }}">
+<textarea name="text" rows="28">{{ text }}</textarea><p><button>Проверить и применить</button></p></form>
+{% else %}<pre>{{ text }}</pre>{% endif %}
+<details><summary>Действующие значения с умолчаниями</summary><pre>{{ effective }}</pre></details>
+{% endblock %}

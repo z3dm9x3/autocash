@@ -1,0 +1,8 @@
+{% extends "base.html" %}{% block title %}dry-run{% endblock %}
+{% block body %}
+<h2>Прогон правила реакции по истории</h2>
+<form>Правило <select name="rule">{% for r in rules %}<option {{ 'selected' if r.id == rule }}>{{ r.id }}</option>{% endfor %}</select>
+за часов <input name="hours" value="{{ hours }}" size="4"> <button>Прогнать</button></form>
+<p class="muted">Ничего не пишется и не отправляется: показано, что сделало бы правило.</p>
+{% if text %}<pre>{{ text }}</pre>{% endif %}
+{% endblock %}

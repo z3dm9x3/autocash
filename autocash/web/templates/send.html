@@ -1,0 +1,9 @@
+{% extends "base.html" %}{% block title %}отправка{% endblock %}
+{% block body %}
+<h2>Отправить сообщение</h2>
+<p class="muted">Сообщение становится исходящей задачей (outbound_tasks) и уходит через общую очередь отправки: с темпом, лимитами и трассой, как ответы модулей.</p>
+<form method="post" action="/send"><input type="hidden" name="csrf" value="{{ csrf }}">
+<p>Чат <input name="chat" value="{{ chat }}" list="chats" required size="20"><datalist id="chats">{% for s in sources %}<option value="{{ s.chat_id }}">{{ s.name }}</option>{% endfor %}</datalist>
+Ответ на сообщение № <input name="reply_to" value="{{ reply_to }}" size="10"></p>
+<p><textarea name="text" rows="6" maxlength="4096" required></textarea></p><button>Поставить в очередь</button></form>
+{% endblock %}

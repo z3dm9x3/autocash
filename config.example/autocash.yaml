@@ -95,6 +95,15 @@ modules:
   reactions: {}                        # rules below; the module must be listed to run them
 
 # Loading the history of chats (stage 4): /backfill start [days] [all | chat_id], pause, resume, status.
+# Web admin (stage 5, docs/decisions.md D-5-1..6). Passwords: python -m autocash.cli.webuser set <tg_id>.
+web:
+  enabled: false
+  host: 127.0.0.1   # not exposed: an SSH tunnel or a reverse proxy with HTTPS
+  port: 8088
+  session_hours: 12
+  secure_cookie: false
+  git_commit: true
+
 backfill:
   days: 30                             # OPEN-QUESTION: stage 4 - how far back the history is loaded
   batch: 100                           # messages per request

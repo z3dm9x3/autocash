@@ -1,0 +1,65 @@
+{% extends "base.html" %}{% block title %}конфигурация{% endblock %}
+{% macro toggle(kind, id, value, label) -%}
+<form class="inline" method="post" action="/config/toggle"><input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="base_version" value="{{ version }}"><input type="hidden" name="kind" value="{{ kind }}">
+<input type="hidden" name="id" value="{{ id }}"><input type="hidden" name="value" value="{{ value }}"><button {{ '' if 'web_edit' in rights else 'disabled' }}>{{ label }}</button></form>
+{%- endmacro %}
+{% block body %}
+<h2>Конфигурация <small class="muted">версия {{ version }}, файлы: {{ files|join(', ') }}</small></h2>
+<p class="muted">Каждое изменение проходит ту же проверку, что правка YAML-файла и /reload, получает версию и попадает в журнал с автором.</p>
+
+<fieldset><legend>Рубильники модулей</legend>
+<table><tr><th>Модуль</th><th>Состояние</th><th></th></tr>
+{% for name in modules %}{% set on = cfg.modules.get(name).enabled if cfg.modules.get(name) else true %}
+<tr><td>{{ name }}</td><td class="{{ 'on-badge' if on else 'off-badge' }}">{{ 'включён' if on else 'выключен' }}</td>
+<td>{{ toggle('module', name, 'off' if on else 'on', 'Выключить' if on else 'Включить') }}</td></tr>{% endfor %}</table></fieldset>
+
+<fieldset><legend>Правила реакции</legend>
+<table><tr><th>Правило</th><th>Версия</th><th>Состояние</th><th>Режим</th><th></th></tr>
+{% for r in cfg.reactions.rules %}<tr><td>{{ r.id }}</td><td>{{ r.version }}</td>
+<td class="{{ 'on-badge' if r.enabled else 'off-badge' }}">{{ 'включено' if r.enabled else 'выключено' }}</td><td>{{ r.mode }}</td>
+<td>{{ toggle('reaction', r.id, 'off' if r.enabled else 'on', 'Выключить' if r.enabled else 'Включить') }}
+{{ toggle('reaction', r.id, 'live' if r.mode == 'dry_run' else 'dry_run', 'В боевой режим' if r.mode == 'dry_run' else 'В dry-run') }}
+<a href="/dryrun?rule={{ r.id }}">прогон</a></td></tr>{% endfor %}</table></fieldset>
+
+<fieldset><legend>Правила сортировки (шаблоны)</legend>
+<table><tr><th>Шаблон / правило</th><th>Тип</th><th>Состояние</th><th></th></tr>
+{% for tname, tpl in cfg.templates.items() %}{% for r in tpl.rules %}<tr><td>{{ tname }} / {{ r.id }}</td><td>{{ r.type }}</td>
+<td class="{{ 'on-badge' if r.enabled else 'off-badge' }}">{{ 'включено' if r.enabled else 'выключено' }}</td>
+<td>{{ toggle('rule', tname ~ '/' ~ r.id, 'off' if r.enabled else 'on', 'Выключить' if r.enabled else 'Включить') }}</td></tr>{% endfor %}{% endfor %}</table></fieldset>
+
+<fieldset><legend>Источники (группы, кассы) и их роли</legend>
+<table><tr><th>chat_id</th><th>Имя</th><th>Роли</th><th>Шаблон</th><th>Политика</th><th>Приоритет</th><th></th></tr>
+{% for s in cfg.sources %}{% set fid = 'src' ~ loop.index %}<tr>
+<td>{{ s.chat_id }}<form id="{{ fid }}" method="post" action="/config/source"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="base_version" value="{{ version }}"><input type="hidden" name="chat_id" value="{{ s.chat_id }}"></form></td>
+<td><input form="{{ fid }}" name="name" value="{{ s.name }}"></td><td><input form="{{ fid }}" name="roles" value="{{ s.roles|join(' ') }}"></td>
+<td><select form="{{ fid }}" name="template"><option></option>{% for t in cfg.templates %}<option {{ 'selected' if s.template == t }}>{{ t }}</option>{% endfor %}</select></td>
+<td><select form="{{ fid }}" name="policy"><option value="">по роли</option>{% for p in ['full', 'meta', 'presence', 'ignore'] %}<option {{ 'selected' if s.policy == p }}>{{ p }}</option>{% endfor %}</select></td>
+<td><input form="{{ fid }}" name="priority" value="{{ s.priority }}" size="3"></td>
+<td><button form="{{ fid }}" {{ '' if 'web_edit' in rights else 'disabled' }}>Сохранить</button>
+<td><form class="inline" method="post" action="/config/source/delete" onsubmit="return confirm('Удалить источник из конфигурации?')"><input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="base_version" value="{{ version }}"><input type="hidden" name="chat_id" value="{{ s.chat_id }}"><button {{ '' if 'web_edit' in rights else 'disabled' }}>Удалить</button></form></td></tr>{% endfor %}
+<tr><td><form id="srcnew" method="post" action="/config/source"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="base_version" value="{{ version }}"></form>
+<input form="srcnew" name="chat_id" placeholder="-100…" size="16" required></td><td><input form="srcnew" name="name" placeholder="имя"></td><td><input form="srcnew" name="roles" placeholder="kassa"></td>
+<td><select form="srcnew" name="template"><option></option>{% for t in cfg.templates %}<option>{{ t }}</option>{% endfor %}</select></td>
+<td><select form="srcnew" name="policy"><option value="">по роли</option>{% for p in ['full', 'meta', 'presence', 'ignore'] %}<option>{{ p }}</option>{% endfor %}</select></td>
+<td><input form="srcnew" name="priority" value="5" size="3"></td><td><button form="srcnew" {{ '' if 'web_edit' in rights else 'disabled' }}>Добавить</button></td></tr>
+</table></fieldset>
+
+<fieldset><legend>Пользователи и роли</legend>
+<p class="muted">Роли: {{ cfg.user_roles|join(', ') }}</p>
+<table><tr><th>Telegram ID</th><th>Роли</th><th></th></tr>
+{% for uid, roles in cfg.users.items() %}{% set fid = 'usr' ~ loop.index %}<tr>
+<td>{{ uid }}<form id="{{ fid }}" method="post" action="/config/user"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="base_version" value="{{ version }}"><input type="hidden" name="tg_id" value="{{ uid }}"></form></td>
+<td><input form="{{ fid }}" name="roles" value="{{ roles|join(' ') }}"></td>
+<td><button form="{{ fid }}" {{ '' if 'web_edit' in rights else 'disabled' }}>Сохранить</button>
+<form class="inline" method="post" action="/config/user/delete"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="base_version" value="{{ version }}">
+<input type="hidden" name="tg_id" value="{{ uid }}"><button {{ '' if 'web_edit' in rights else 'disabled' }}>Удалить</button></form></td></tr>{% endfor %}
+<tr><td><form id="usrnew" method="post" action="/config/user"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="base_version" value="{{ version }}"></form>
+<input form="usrnew" name="tg_id" required size="14"></td><td><input form="usrnew" name="roles" placeholder="manager"></td><td><button form="usrnew" {{ '' if 'web_edit' in rights else 'disabled' }}>Добавить</button></td></tr>
+</table></fieldset>
+
+<fieldset><legend>Разделы целиком (YAML): манифест и словари, шаблоны, права, приоритеты, TTL, сроки хранения, нормативы</legend>
+{% for s in sections %}<a href="/config/section?key={{ s }}">{{ s }}</a>{{ ' · ' if not loop.last }}{% endfor %}
+</fieldset>
+{% endblock %}

@@ -1,0 +1,11 @@
+{% extends "base.html" %}{% block title %}сообщения{% endblock %}
+{% block body %}
+<h2>Сообщения</h2>
+<form>Чат <input name="chat" value="{{ q.get('chat', '') }}" size="16"> Текст содержит <input name="text" value="{{ q.get('text', '') }}">
+Тип <input name="type" value="{{ q.get('type', '') }}" size="14"> Источник <select name="source">{% for s in ['', 'live', 'backfill'] %}<option {{ 'selected' if q.get('source', '') == s }}>{{ s }}</option>{% endfor %}</select>
+<button>Показать</button></form>
+<table><tr><th>Дата</th><th>Чат</th><th>№ / версия</th><th>Отправитель</th><th>Тип</th><th>Источник</th><th>Текст</th><th></th></tr>
+{% for m in rows %}<tr><td>{{ m.msg_date|ts }}</td><td>{{ names.get(m.chat_id, m.chat_id) }}</td><td>{{ m.msg_id }} / {{ m.version }}</td>
+<td>{{ m.sender_id or '' }} {{ m.sender_role or '' }}</td><td>{{ m.msg_type or '' }}</td><td>{{ m.source }}</td><td>{{ (m.text or '')[:400] }}</td>
+<td><a href="/trace?q={{ m.trace_id }}">трасса</a>{% if 'web_send' in rights %} · <a href="/send?chat={{ m.chat_id }}&reply_to={{ m.msg_id }}">ответить</a>{% endif %}</td></tr>{% endfor %}</table>
+{% endblock %}

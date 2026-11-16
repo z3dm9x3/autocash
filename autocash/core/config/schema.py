@@ -289,6 +289,18 @@ class BackfillCfg(Strict):
     max_backlog: int = 60
 
 
+class WebCfg(Strict):
+    """The web admin (stage 5, docs/decisions.md D-5-1): a part of the same process."""
+
+    enabled: bool = False
+    host: str = "127.0.0.1"  # NFT-20: not exposed; reach it through an SSH tunnel or a reverse proxy
+    port: int = 8088
+    session_hours: float = 12
+    secure_cookie: bool = False  # true behind HTTPS
+    git_commit: bool = True  # commit config files changed through the admin when they are in a git repo
+    page_limit: int = Field(default=200, ge=10, le=2000)
+
+
 class Config(Strict):
     service_chats: ServiceChatsCfg = ServiceChatsCfg()
     # user_id -> global roles (FT-12.1); source-bound roles live in sources[].senders
@@ -307,6 +319,7 @@ class Config(Strict):
     reports: ReportsCfg = ReportsCfg()
     reactions: ReactionsCfg = ReactionsCfg()
     backfill: BackfillCfg = BackfillCfg()
+    web: WebCfg = WebCfg()
     defaults: DefaultsCfg = DefaultsCfg()
     sources: list[SourceCfg] = []
     manifest: ManifestCfg = ManifestCfg()

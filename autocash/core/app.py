@@ -35,6 +35,7 @@ from autocash.core.trace.monitor import TraceMonitor
 from autocash.core.uploader.uploader import Uploader
 from autocash.core.watchdog import SystemdNotifier
 from autocash.modules.api import Module, Services
+from autocash.web.server import WebAdmin
 
 log = logging.getLogger(__name__)
 
@@ -113,6 +114,7 @@ class App:
         self.monitor = TraceMonitor(self.store, self.db, self._buffer_backlog, self.alerts.alarm)
         self.backfill = Backfill(self.store, self.db, self.pool, self.scheduler, self._pipeline_backlog)
         self.notifier = SystemdNotifier()
+        self.web = WebAdmin(self)  # stage 5: started when `web.enabled`
         self.sorter = Sorter(self.store, self.db, self.writer, self.queues.dispatch, self.queues.subscribers,
                              self.alerts.debug)
         self.uploader = Uploader(self.store, self.buffer, self.db, self.sorter.submit, self.sorter.recover_nowait)
@@ -195,6 +197,11 @@ class App:
                 self._tasks.append(asyncio.create_task(self._periodic(module, module.periodic_s),
                                                        name=f"periodic-{module.name}"))
         self._tasks.append(asyncio.create_task(self._maintenance(), name="maintenance"))
+        if self.store.current.config.web.enabled:
+            try:
+                await self.web.start()
+            except OSError as exc:
+                self.alerts.alarm(f"Веб-админка не запустилась: {exc}")
         self.ready_at = time.time()
         self.ready.set()
         self.notifier.ready(f"ready in {self.ready_at - self.started_at:.1f} s")
@@ -202,6 +209,7 @@ class App:
 
     async def stop(self) -> None:
         self.notifier.stopping()
+        await self.web.stop()
         await self.monitor.stop()
         await self.backfill.stop()
         if self.sessions is not None:

@@ -1,0 +1,18 @@
+{% extends "base.html" %}{% block title %}пул{% endblock %}
+{% block body %}
+<h2>Пул аккаунтов (/accounts)</h2><pre>{{ accounts }}</pre>
+<table><tr><th>ID</th><th>Имя</th><th>Тип</th><th>Состояние</th><th>Причина</th><th>Бюджет</th><th>Нагрузка</th><th>Обязанности</th>{% if 'web_pool' in rights %}<th>Действия</th>{% endif %}</tr>
+{% for a in rows %}<tr><td>{{ a.account_id }}</td><td>{{ a.name }}</td><td>{{ a.kind }}</td><td>{{ a.state }}</td><td>{{ a.reason or '' }}</td>
+<td>{{ a.budget }}</td><td>{{ a.load }}</td><td>{% for d, v in a.duties.items() %}{{ d }}: {{ v }} {% endfor %}</td>
+{% if 'web_pool' in rights %}<td>
+{% for act, label in [('restrict', 'Ограничить'), ('unrestrict', 'Снять ограничение'), ('remove', 'Вывести из пула')] %}
+<form class="inline" method="post" action="/pool/action"{% if act == 'remove' %} onsubmit="return confirm('Вывести аккаунт из пула?')"{% endif %}>
+<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="account" value="{{ a.account_id }}"><input type="hidden" name="action" value="{{ act }}"><button>{{ label }}</button></form>
+{% endfor %}</td>{% endif %}</tr>{% endfor %}</table>
+{% if 'web_pool' in rights %}
+<form method="post" action="/pool/action"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="scan">
+<button {{ '' if sessions else 'disabled' }}>Просмотреть каталог сессий</button>
+<span class="muted">Новый аккаунт: вход утилитой <code>python -m autocash.cli.login</code>; файл сессии появится в каталоге, и аккаунт подключится сам.</span></form>
+{% endif %}
+<h3>Покрытие чатов (/coverage)</h3><pre>{{ coverage }}</pre>
+{% endblock %}

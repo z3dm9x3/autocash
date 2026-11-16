@@ -1,0 +1,10 @@
+{% extends "base.html" %}{% block title %}обзор{% endblock %}
+{% block body %}
+<h2>Состояние (/status)</h2><pre>{{ status }}</pre>
+<h3>Очереди (/queue)</h3><pre>{{ queue }}</pre>
+<h3>Покрытие (/coverage)</h3><pre>{{ coverage }}</pre>
+<h3>Загрузка истории</h3>
+{% if backfill %}<table><tr><th>Чат</th><th>Статус</th><th>Загружено</th><th>С даты</th><th>Ошибка</th></tr>
+{% for b in backfill %}<tr><td>{{ b.chat_id }}</td><td>{{ b.status }}</td><td>{{ b.loaded }}</td><td>{{ b.since|ts }}</td><td>{{ b.last_error or '' }}</td></tr>{% endfor %}
+</table>{% else %}<p class="muted">Не запускалась.</p>{% endif %}
+{% endblock %}

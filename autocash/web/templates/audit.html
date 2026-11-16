@@ -1,0 +1,10 @@
+{% extends "base.html" %}{% block title %}журнал{% endblock %}
+{% block body %}
+<h2>Изменения конфигурации</h2>
+<table><tr><th>Когда</th><th>Автор</th><th>Что</th><th>Версия</th><th>Файлы</th><th>git</th><th>Разница</th></tr>
+{% for c in changes %}<tr><td>{{ c.at|ts }}</td><td>{{ c.author }}</td><td>{{ c.summary }}</td><td>{{ c.version_before }} → {{ c.version_after }}</td>
+<td>{{ c.files|join(', ') }}</td><td>{{ c.git_commit or '' }}</td><td><details><summary>diff</summary><pre>{{ c.diff }}</pre></details></td></tr>{% endfor %}</table>
+<h2>Действия в админке</h2>
+<table><tr><th>Когда</th><th>Автор</th><th>Действие</th><th>Объект</th><th>Успех</th><th>Подробности</th></tr>
+{% for a in audit %}<tr><td>{{ a.at|ts }}</td><td>{{ a.author }}</td><td>{{ a.action }}</td><td>{{ a.target or '' }}</td><td>{{ 'да' if a.ok else 'нет' }}</td><td><code>{{ a.detail }}</code></td></tr>{% endfor %}</table>
+{% endblock %}

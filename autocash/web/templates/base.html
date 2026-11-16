@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Autocash — {% block title %}админка{% endblock %}</title>
+<style>
+body{font:14px/1.45 system-ui,sans-serif;margin:0;color:#1d2330;background:#f6f7f9}
+nav{background:#1d2330;padding:8px 16px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+nav a{color:#dfe5ee;text-decoration:none}nav a.on{color:#fff;font-weight:600;text-decoration:underline}
+nav .sp{flex:1}nav small{color:#9aa6b8}
+main{padding:16px;max-width:1300px}
+pre{background:#fff;border:1px solid #dde1e7;padding:10px;white-space:pre-wrap;overflow-x:auto}
+table{border-collapse:collapse;background:#fff;width:100%;margin:8px 0}
+td,th{border:1px solid #dde1e7;padding:4px 6px;text-align:left;vertical-align:top}th{background:#eef1f5}
+.ok{background:#e5f6e8;border:1px solid #9bd3a6;padding:8px;margin:8px 0}
+.err{background:#fdecec;border:1px solid #e5a3a3;padding:8px;margin:8px 0;white-space:pre-wrap}
+form.inline{display:inline}input,select,textarea,button{font:inherit}textarea{width:100%;font-family:monospace}
+.muted{color:#6b7484}.on-badge{color:#17803a}.off-badge{color:#b42318}
+fieldset{background:#fff;border:1px solid #dde1e7;margin:10px 0}
+</style></head><body>
+{% if user %}
+<nav>
+<a href="/" class="{{ 'on' if path == '/' }}">Обзор</a>
+<a href="/pool" class="{{ 'on' if path == '/pool' }}">Пул</a>
+<a href="/trace" class="{{ 'on' if path == '/trace' }}">Трассы</a>
+<a href="/stuck" class="{{ 'on' if path == '/stuck' }}">Зависшие</a>
+<a href="/metrics" class="{{ 'on' if path == '/metrics' }}">Метрики</a>
+<a href="/messages" class="{{ 'on' if path == '/messages' }}">Сообщения</a>
+{% if 'web_send' in rights %}<a href="/send" class="{{ 'on' if path == '/send' }}">Отправка</a>{% endif %}
+<a href="/config" class="{{ 'on' if path.startswith('/config') }}">Конфигурация</a>
+<a href="/dryrun" class="{{ 'on' if path == '/dryrun' }}">Dry-run</a>
+<a href="/audit" class="{{ 'on' if path == '/audit' }}">Журнал</a>
+<span class="sp"></span><small>версия {{ version }} · {{ user.tg_id }}</small>
+<form class="inline" method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Выйти</button></form>
+</nav>
+{% endif %}
+<main>
+{% if flash %}<div class="ok">{{ flash }}</div>{% endif %}
+{% if error %}<div class="err">{{ error }}</div>{% endif %}
+{% block body %}{% endblock %}
+</main></body></html>
