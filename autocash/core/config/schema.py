@@ -248,7 +248,7 @@ class CommandArgCfg(Strict):
 
 
 class ReactionWhenCfg(Strict):
-    type: list[str] = []  # message types, masks allowed ("deposit.*")
+    type: list[str] = []  # message types, masks allowed ("order.*")
     command: str | None = None  # a command rule (FT-12.3)
     args: list[CommandArgCfg] = []
     timer: str | None = None  # fired by `schedule`

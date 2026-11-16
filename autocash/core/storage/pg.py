@@ -131,8 +131,12 @@ class Database:
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, max_retry_s)
 
-    async def migrate(self) -> list[str]:
+    async def migrate(self, modules: dict[str, Path] | None = None) -> list[str]:
+        """Core migrations, then the migrations of connected modules (named "<module>/<file>")."""
         applied: list[str] = []
+        files = [(f.name, f) for f in sorted(MIGRATIONS_DIR.glob("*.sql"))]
+        for module, directory in sorted((modules or {}).items()):
+            files += [(f"{module}/{f.name}", f) for f in sorted(directory.glob("*.sql"))]
         async with self.pool.acquire() as conn:
             await conn.execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations "
@@ -141,12 +145,12 @@ class Database:
             async with conn.transaction():
                 await conn.execute("LOCK TABLE schema_migrations IN EXCLUSIVE MODE")
                 done = {r["name"] for r in await conn.fetch("SELECT name FROM schema_migrations")}
-                for file in sorted(MIGRATIONS_DIR.glob("*.sql")):
-                    if file.name in done:
+                for name, file in files:
+                    if name in done:
                         continue
                     await conn.execute(file.read_text(encoding="utf-8"))
-                    await conn.execute("INSERT INTO schema_migrations (name) VALUES ($1)", file.name)
-                    applied.append(file.name)
+                    await conn.execute("INSERT INTO schema_migrations (name) VALUES ($1)", name)
+                    applied.append(name)
                 await conn.executemany(
                     "INSERT INTO reason_codes (code, meaning, status) VALUES ($1, $2, $3) "
                     "ON CONFLICT (code) DO UPDATE SET meaning = EXCLUDED.meaning, status = EXCLUDED.status",

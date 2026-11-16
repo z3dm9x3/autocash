@@ -304,8 +304,10 @@ async def test_ambiguous_identifier_asks_for_a_prefix(app_factory: AppFactory, f
     assert "TGID: 555" in await ask(app, fake, "/player tg:555")
 
 
-async def test_sanction_marks_keep_author_and_time(app: App) -> None:
+async def test_sanction_marks_keep_author_and_time(app_factory: AppFactory, cfg: dict[str, Any]) -> None:
     from autocash.modules.players import store
+
+    app = await make(app_factory, cfg)  # the tables of the module exist when the module is connected
 
     async with app.db.pool.acquire() as conn:
         assert await store.add_mark(conn, "scam", "tg", TG, author="8001", text="чек подделан",

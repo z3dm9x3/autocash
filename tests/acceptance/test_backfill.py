@@ -82,6 +82,9 @@ class Recorder(Module):
 async def test_live_event_of_a_key_is_processed_after_its_history(
         app_factory: AppFactory, fake: FakeTelegram, cfg: dict[str, Any]) -> None:
     cfg["queue"] = {"backfill_rate_per_s": 20, "live_threshold": 100}  # the history crawls
+    cfg["backfill"] = {"batch": 50, "interval_s": 0.05, "max_backlog": 100}  # it all fits into the queue
+    # The fake answers getChannelDifference with the same history as "live": no safety poll here.
+    cfg["poll"] = {"chats_per_account": 0}
     start = datetime.now(UTC) - timedelta(hours=2)
     for i in range(60):
         fake.post(KASSA, BOT, f"key: {'A' if i % 2 else 'B'}\nn: {i}", date=start + timedelta(seconds=i))
@@ -89,7 +92,11 @@ async def test_live_event_of_a_key_is_processed_after_its_history(
     rec.seen = []
     app = await started(app_factory(cfg=cfg, modules=[rec]))
     await app.backfill.begin([KASSA])
+    # The whole history is accepted first; the module then works through it slowly (20 a second),
+    # so A has history waiting in the queue when its live event comes (the case of FT-7.5).
+    await wait_for(lambda: done(app), timeout=60, what="history accepted")
     await wait_for(lambda: len(rec.seen) >= 4, timeout=60, what="history started")
+    assert len(rec.seen) < 60
     fake.post(KASSA, BOT, "key: A\nn: 1000")  # live, while A still has history in the queue
     fake.post(KASSA, BOT, "key: C\nn: 2000")  # live, a key without history: not held back
     await wait_for(lambda: len(rec.seen) == 62, timeout=120, what="everything processed")

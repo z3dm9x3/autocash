@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
@@ -25,6 +26,7 @@ class PlayersConfig(BaseModel):
 
 class PlayersModule(Module):
     name: ClassVar[str] = "players"
+    migrations: ClassVar[Path | None] = Path(__file__).parent / "migrations"
     # Every message type carrying both identifiers (fields tgid and mel_id) adds a pair.
     subscriptions: ClassVar[list[str]] = ["deposit.*", "player.*", *(f"command.{c}" for c in COMMANDS)]
     entities: ClassVar[list[EntityDecl]] = [EntityDecl("player", "player_idents, player_merges, player_marks")]

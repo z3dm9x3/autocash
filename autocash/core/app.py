@@ -177,7 +177,7 @@ class App:
 
     async def _start_pipeline(self) -> None:
         await self.db.wait_available()
-        await self.db.migrate()
+        await self.db.migrate({m.name: m.migrations for m in self.modules if m.migrations is not None})
         self.writer.start()
         self._record_config(self.store.current)
         # Stored FloodWait pauses are applied before any active call is allowed (FT-10.3).

@@ -11,6 +11,7 @@ import json
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
@@ -130,6 +131,7 @@ class Module(ABC):
     concurrency: ClassVar[int] = 16
     timeout_s: ClassVar[float] = 5.0
     periodic_s: ClassVar[float | None] = None  # run `periodic()` this often, if set
+    migrations: ClassVar[Path | None] = None  # the module's own SQL migrations (P-1: not in the core)
     services: Services | None = None
 
     def bind(self, services: Services) -> None:

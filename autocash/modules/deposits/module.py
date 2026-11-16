@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, ClassVar
 
 import asyncpg
@@ -49,6 +50,7 @@ class DepositsConfig(BaseModel):
 
 class DepositsModule(Module):
     name: ClassVar[str] = "deposits"
+    migrations: ClassVar[Path | None] = Path(__file__).parent / "migrations"
     subscriptions: ClassVar[list[str]] = ["deposit.*", "method.*", "command.summ"]
     entities: ClassVar[list[EntityDecl]] = [EntityDecl("deposit", "deposits, deposit_events, payment_methods")]
     commands: ClassVar[list[str]] = ["summ"]

@@ -1,6 +1,6 @@
 """A small, safe JSONLogic interpreter for rule conditions (FT-8.5; docs/decisions.md D-3-1).
 
-A condition is data, not code: {"and": [{"==": [{"var": "type"}, "deposit.request"]},
+A condition is data, not code: {"and": [{"==": [{"var": "type"}, "order.created"]},
 {">": [{"var": "fields.amount"}, 1000]}]}. Only the operators below exist; there is no access
 to Python objects, attributes or functions, and evaluation is bounded by the size of the rule.
 """
