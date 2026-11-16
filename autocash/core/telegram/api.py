@@ -93,6 +93,10 @@ class TelegramClient(Protocol):
 
     async def get_channel_difference(self, chat_id: int, pts: int, limit: int = 100) -> Difference: ...
 
+    async def get_messages(self, chat_id: int, ids: list[int]) -> list[RawEvent]:
+        """Current state of the messages (a reconciliation re-read, FT-З.10); missing ones are skipped."""
+        ...
+
 
 class Limiter(Protocol):
     """All active API calls of one account go through its limiter (FT-10.1)."""

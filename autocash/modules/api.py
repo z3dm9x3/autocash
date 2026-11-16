@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -60,6 +61,11 @@ class Context:
         self._db = db
         self.ops: list[tuple[str, tuple[Any, ...]]] = []
         self.drafts: list[OutboundDraft] = []
+        self.final: tuple[str, str] | None = None
+
+    def finish(self, status: str, reason: str) -> None:
+        """End the task with a status other than "processed" (e.g. cancelled + ACCESS_DENIED)."""
+        self.final = (str(status), str(reason))
 
     # ---- deferred writes: applied atomically with the processing mark -------------------
     def execute(self, sql: str, *args: Any) -> None:
@@ -100,6 +106,19 @@ class Context:
         return await self._db.pool.fetchrow(sql, *args)
 
 
+@dataclass(slots=True)
+class Services:
+    """What the core gives a module outside of event handling (bound by the App)."""
+
+    db: Database
+    reread: Callable[[int, list[int]], Awaitable[bool]]  # chat, message ids -> re-read through the pool
+    notify: Callable[[str], None]  # a message to the staff group `logs`
+    runtime: Callable[[], Any]  # the current configuration Runtime
+
+
+TraceResolver = Callable[[str], Awaitable[list[str]]]
+
+
 class Module(ABC):
     name: ClassVar[str]
     subscriptions: ClassVar[list[str]] = []  # message types, masks allowed: "deposit.*", "*"
@@ -108,6 +127,18 @@ class Module(ABC):
     config_model: ClassVar[type[BaseModel] | None] = None
     concurrency: ClassVar[int] = 16
     timeout_s: ClassVar[float] = 5.0
+    periodic_s: ClassVar[float | None] = None  # run `periodic()` this often, if set
+    services: Services | None = None
+
+    def bind(self, services: Services) -> None:
+        self.services = services
+
+    async def periodic(self) -> None:
+        """Periodic work of the module (sweeps, reconciliation); runs outside event handling."""
+
+    def trace_resolver(self) -> TraceResolver | None:
+        """Turns a module key (e.g. an entity id) into trace ids for /trace."""
+        return None
 
     @abstractmethod
     async def handle(self, event: Event, ctx: Context) -> None:

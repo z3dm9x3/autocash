@@ -40,11 +40,17 @@ def is_connection_error(exc: BaseException) -> bool:
 
 
 class Database:
-    def __init__(self, dsn: str, *, max_size: int = 6, command_timeout: float = 10.0) -> None:
+    def __init__(self, dsn: str, *, max_size: int = 6, command_timeout: float = 10.0,
+                 reports_timeout_ms: int = 1000, reports_size: int = 2) -> None:
         self._dsn = dsn
         self._max_size = max_size
         self._command_timeout = command_timeout
         self._pool: asyncpg.Pool | None = None
+        # NFT-15: reports and read commands have their own connections and a statement timeout,
+        # so a slow report never takes a connection from the batch writers.
+        self._reports: asyncpg.Pool | None = None
+        self._reports_timeout_ms = reports_timeout_ms
+        self._reports_size = reports_size
         self.available = False
         self.up_event = asyncio.Event()
         self.on_change: Callable[[bool, str], None] | None = None
@@ -65,9 +71,28 @@ class Database:
         else:
             async with self._pool.acquire(timeout=3.0) as conn:
                 await conn.execute("SELECT 1")
+        if self._reports is None:
+            self._reports = await asyncpg.create_pool(
+                self._dsn, min_size=1, max_size=self._reports_size, timeout=3.0,
+                server_settings={"statement_timeout": str(self._reports_timeout_ms),
+                                 "application_name": "autocash-reports"},
+            )
         self.mark_up()
 
+    @property
+    def reports(self) -> asyncpg.Pool:
+        """Connections for reports and read commands (statement_timeout applies)."""
+        if self._reports is None:
+            raise DbUnavailable("PostgreSQL reports pool is not created")
+        return self._reports
+
     async def close(self) -> None:
+        if self._reports is not None:
+            reports, self._reports = self._reports, None
+            try:
+                await asyncio.wait_for(reports.close(), 3.0)
+            except Exception:
+                reports.terminate()
         if self._pool is not None:
             pool, self._pool = self._pool, None
             try:

@@ -69,6 +69,12 @@ ON CONFLICT (trace_id, module) DO UPDATE
     WHERE trace_module.finished_at IS NULL
 """
 
+_RETRIED = """
+SELECT m.* FROM trace_module t JOIN messages m ON m.trace_id = t.trace_id
+WHERE t.module = $1 AND t.finished_at IS NULL AND t.ingest_id <= $2
+ORDER BY m.ingest_id
+"""
+
 _INBOUND_DONE = """
 UPDATE trace_inbound t SET status = 'processed', finished_at = now()
 WHERE t.trace_id = ANY($1::uuid[]) AND t.status = 'in_progress'
@@ -215,6 +221,7 @@ class _Commit:
     drafts: list[OutboundDraft]
     ttl: dict[str, float]
     config_version: str
+    final: tuple[str, str] | None = None
 
 
 class _Runner:
@@ -355,6 +362,16 @@ class QueueManager:
                 )
                 if task_id is not None:
                     ids.setdefault((e.trace_id, e.module), []).append(task_id)
+        finals = [e for e in fresh if e.final is not None]
+        if finals:
+            args = [(e.trace_id, e.module, e.final[0], e.final[1]) for e in finals if e.final is not None]
+            await conn.executemany(
+                "UPDATE trace_module SET status = $3, reason_code = $4 WHERE trace_id = $1::uuid AND module = $2",
+                args)
+            await conn.executemany(
+                "UPDATE trace_inbound SET status = $2, reason_code = $3, finished_at = now() "
+                "WHERE trace_id = $1::uuid AND status = 'in_progress'",
+                [(t, s, r) for t, _, s, r in args])
         if fresh:
             await conn.execute(_INBOUND_DONE, [e.trace_id for e in fresh])
         return [ids.get((e.trace_id, e.module), []) for e in entries]
@@ -366,6 +383,10 @@ class QueueManager:
         for name, runner in self._runners.items():
             runner.mq.cursor = marks.get(name, 0)
             runner.saved_mark = marks.get(name, -1)
+            # Tasks restarted by /retry may lie behind the mark: they are queued explicitly.
+            rows = await self._db.pool.fetch(_RETRIED, name, runner.mq.cursor)
+            for row in rows:
+                runner.mq.force(MessageRecord.from_row(row))
             for i in range(runner.concurrency):
                 self._tasks.append(asyncio.create_task(self._worker(runner), name=f"module-{name}-{i}"))
             self._tasks.append(asyncio.create_task(self._refill_loop(runner), name=f"refill-{name}"))
@@ -450,7 +471,7 @@ class QueueManager:
         rt = self._store.current
         if failure is None:
             entry = _Commit(rec.trace_id, module.name, rec.ingest_id, queued_at, started, ctx.ops, ctx.drafts,
-                            rt.config.output.ttl_s, rt.version)
+                            rt.config.output.ttl_s, rt.version, ctx.final)
             crashpoints.hit("module_before_commit")
             try:
                 ids: list[int] = await self._commits.add_sync(entry)
@@ -479,6 +500,31 @@ class QueueManager:
             )
 
         await self._writer.submit_sync(fail)
+
+    # ---- /retry ------------------------------------------------------------------------------------
+    async def retry(self, targets: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """Restart failed module processing from its current stage (FT-11.9)."""
+        done: list[tuple[str, str]] = []
+        for trace_id, module in targets:
+            runner = self._runners.get(module)
+            if runner is None:
+                continue
+            async with self._db.pool.acquire() as conn, conn.transaction():
+                ok = await conn.fetchval(
+                    "UPDATE trace_module SET finished_at = NULL, status = 'in_progress', reason_code = NULL, "
+                    "error = NULL, stuck_at = NULL, stuck_stage = NULL "
+                    "WHERE trace_id = $1::uuid AND module = $2 AND status = 'waiting' RETURNING 1",
+                    trace_id, module)
+                if not ok:
+                    continue
+                await conn.execute(
+                    "UPDATE trace_inbound SET status = 'in_progress', reason_code = NULL, finished_at = NULL "
+                    "WHERE trace_id = $1::uuid AND status = 'waiting'", trace_id)
+                row = await conn.fetchrow("SELECT * FROM messages WHERE trace_id = $1::uuid LIMIT 1", trace_id)
+            if row is not None:
+                runner.mq.force(MessageRecord.from_row(row))
+                done.append((trace_id, module))
+        return done
 
     # ---- refill from PostgreSQL --------------------------------------------------------------
     async def _refill_loop(self, runner: _Runner) -> None:

@@ -145,6 +145,23 @@ class Output:
         self._clear_timer(task)
         self._tasks.pop(task.id, None)
 
+    def restart(self, ids: list[int]) -> None:
+        """Tasks reopened or released by /retry: reload them from PostgreSQL and route again."""
+        for task_id in ids:
+            task = self._tasks.get(task_id)
+            if task is not None and task.sending:
+                continue  # its worker is about to send it anyway
+            if task is not None:
+                self._forget(task)
+        self.enqueue(ids)
+
+    def cancelled(self, ids: list[int]) -> None:
+        """Tasks cancelled by /cancel are dropped from memory (a worker skips them)."""
+        for task_id in ids:
+            task = self._tasks.get(task_id)
+            if task is not None and not task.sending:
+                self._forget(task)
+
     def on_pool_change(self) -> None:
         """An account or a membership link changed: waiting and queued tasks are routed again (FT-11.8)."""
         if not self._started:

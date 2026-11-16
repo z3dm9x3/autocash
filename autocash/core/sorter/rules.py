@@ -133,6 +133,8 @@ def _field_value(source: str, v: MsgView) -> Any:
         return v.header
     if source == "$command":
         return v.command["name"] if v.command else None
+    if source == "$markers":
+        return sorted(v.markers) or None
     if source.startswith("$args"):
         if not v.command:
             return None

@@ -296,6 +296,11 @@ class TelethonClient:
                 out.append(info)
         return out
 
+    async def get_messages(self, chat_id: int, ids: list[int]) -> list[RawEvent]:
+        msgs = await self._call("channels.getMessages", self._client.get_messages(chat_id, ids=ids))
+        return [message_event("edit" if getattr(m, "edit_date", None) else "new", self.account_id, m)
+                for m in msgs if m is not None and not isinstance(m, types.MessageEmpty)]
+
     async def get_channel_difference(self, chat_id: int, pts: int, limit: int = 100) -> Difference:
         result = await self._call("updates.getChannelDifference", self._difference(chat_id, pts, limit))
         if isinstance(result, types.updates.ChannelDifferenceTooLong):

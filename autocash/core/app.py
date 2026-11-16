@@ -13,8 +13,10 @@ from typing import Any
 
 import asyncpg
 
+from autocash.actions.entities import expire_states, shutdown_executor
 from autocash.core.alerts import Alerts
 from autocash.core.buffer.sqlite_buffer import BufferPragmaError, SqliteBuffer
+from autocash.core.commands.service import SystemCommands
 from autocash.core.config.loader import ConfigStore, Runtime
 from autocash.core.extractor.extractor import CompiledManifest, extract
 from autocash.core.gateway.gateway import Gateway, OwnMessages
@@ -28,8 +30,10 @@ from autocash.core.sorter.sorter import Sorter
 from autocash.core.storage.pg import Database, is_connection_error
 from autocash.core.storage.writer import BatchWriter
 from autocash.core.telegram.api import TelegramClient
+from autocash.core.trace.monitor import TraceMonitor
 from autocash.core.uploader.uploader import Uploader
-from autocash.modules.api import Module
+from autocash.core.watchdog import SystemdNotifier
+from autocash.modules.api import Module, Services
 
 log = logging.getLogger(__name__)
 
@@ -83,7 +87,8 @@ class App:
             soft_limit_mb=cfg.buffer.soft_limit_mb, hard_limit_mb=cfg.buffer.hard_limit_mb,
             top_priority=cfg.buffer.top_priority,
         )
-        self.db = Database(pg_dsn)
+        self.db = Database(pg_dsn, reports_timeout_ms=cfg.reports.statement_timeout_ms,
+                           reports_size=cfg.reports.pool_size)
         self.writer = BatchWriter(self.db, flush_interval_ms=cfg.writer.flush_interval_ms,
                                   batch_max=cfg.writer.batch_max)
         self.own = OwnMessages()
@@ -98,9 +103,14 @@ class App:
         self.pool.subscribe(self.scheduler.request)
         self.pool.subscribe(self.output.on_pool_change)
         self.queues = QueueManager(self.store, self.db, self.writer, self.output.enqueue, self.alerts.logs)
-        for module in modules:
-            self.queues.register(module)
-            self.pool.reconcilers.append(module.reconcile)
+        # Debug and control commands are a core module (stage 1c).
+        self.commands = SystemCommands(self)
+        self.modules: list[Module] = []
+        for module in [*modules, self.commands]:
+            self.add_module(module)
+        self.gateway.on_command = self.commands.emergency
+        self.monitor = TraceMonitor(self.store, self.db, self._buffer_backlog, self.alerts.alarm)
+        self.notifier = SystemdNotifier()
         self.sorter = Sorter(self.store, self.db, self.writer, self.queues.dispatch, self.queues.subscribers,
                              self.alerts.debug)
         self.uploader = Uploader(self.store, self.buffer, self.db, self.sorter.submit, self.sorter.recover_nowait)
@@ -132,6 +142,8 @@ class App:
             await asyncio.gather(*self.alerts._tasks, return_exceptions=True)
             await self.pool.stop()
             raise
+        # The watchdog heartbeat comes from the main loop: a hung loop stops it (NFT-16).
+        self._tasks.append(asyncio.create_task(self.notifier.heartbeat(), name="watchdog"))
         # Intake into SQLite starts immediately and does not depend on PostgreSQL (NFT-17).
         for client in self._clients:
             await self.pool.add(client)
@@ -164,12 +176,20 @@ class App:
         await self.output.start()
         self.uploader.start()
         self.poller.start()
+        self.monitor.start()
+        for module in self.modules:
+            if module.periodic_s:
+                self._tasks.append(asyncio.create_task(self._periodic(module, module.periodic_s),
+                                                       name=f"periodic-{module.name}"))
         self._tasks.append(asyncio.create_task(self._maintenance(), name="maintenance"))
         self.ready_at = time.time()
         self.ready.set()
+        self.notifier.ready(f"ready in {self.ready_at - self.started_at:.1f} s")
         log.info("pipeline ready in %.2f s", self.ready_at - self.started_at)
 
     async def stop(self) -> None:
+        self.notifier.stopping()
+        await self.monitor.stop()
         if self.sessions is not None:
             await self.sessions.stop()
         await self.poller.stop()
@@ -189,11 +209,41 @@ class App:
         await self.writer.stop(drain=False)
         await self.buffer.stop()
         await self.db.close()
+        shutdown_executor()
 
     # ---- reactions to state changes -----------------------------------------------------------
     def reload_config(self) -> tuple[bool, str]:
         """Hot reload (FT-13.3). An invalid config is not applied; the error goes to `logs`."""
         return self.store.reload()
+
+    def add_module(self, module: Module) -> None:
+        """Register a module before start: queue, reconcile hook, services, /trace resolver."""
+        self.queues.register(module)
+        self.pool.reconcilers.append(module.reconcile)
+        module.bind(Services(self.db, self._reread, self.alerts.logs, lambda: self.store.current))
+        resolver = module.trace_resolver()
+        if resolver is not None:
+            self.commands.resolvers.append(resolver)
+        self.modules.append(module)
+
+    async def _reread(self, chat_id: int, msg_ids: list[int]) -> bool:
+        return await self.pool.reread(chat_id, msg_ids, self.scheduler.account_for("read", chat_id))
+
+    async def _periodic(self, module: Module, every: float) -> None:
+        while True:
+            await asyncio.sleep(every)
+            try:
+                await module.periodic()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if not is_connection_error(exc):
+                    log.exception("module %s: periodic work failed", module.name)
+
+    async def _buffer_backlog(self) -> tuple[int, float, str | None]:
+        stats = await self.buffer.stats()
+        reason = next(iter(stats["waiting"]), None)
+        return int(stats["pending"]), float(stats["oldest_age"]), reason
 
     def _spawn(self, coro: Any, name: str) -> None:
         task = asyncio.create_task(coro, name=name)
@@ -264,6 +314,9 @@ class App:
         await self.db.pool.execute(
             "UPDATE messages SET text = NULL WHERE text IS NOT NULL AND text_expires_at < now()"
         )
+        # set_state with a timeout (FT-8.4): passed timeouts move entities to their timeout state.
+        async with self.db.pool.acquire() as conn:
+            await expire_states(conn)
 
     def _flush_presence(self) -> None:
         dirty = [(chat_id, p) for chat_id, p in self.gateway.presence.items() if p.get("dirty")]

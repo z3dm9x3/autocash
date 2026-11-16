@@ -215,6 +215,15 @@ class FakeTelegram:
         self.sent.append((account_id, chat_id, text, msg_id))
         return msg_id
 
+    def messages(self, account_id: int, chat_id: int, ids: list[int]) -> list[RawEvent]:
+        self._api_call(account_id, "getMessages")
+        chat = self.chats.get(chat_id)
+        if chat is None or account_id not in chat.members:
+            raise TelegramError("CHANNEL_PRIVATE")
+        wanted = set(ids)
+        return [self._event("edit" if m.edit_date else "new", m, chat, account_id) for m in chat.messages
+                if not m.deleted and m.id_for(account_id) in wanted]
+
     def dialogs(self, account_id: int) -> list[DialogInfo]:
         self._api_call(account_id, "getDialogs")
         return [
@@ -287,3 +296,7 @@ class FakeClient:
     async def get_channel_difference(self, chat_id: int, pts: int, limit: int = 100) -> Difference:
         await asyncio.sleep(0)
         return self.server.get_channel_difference(self.account_id, chat_id, pts, limit)
+
+    async def get_messages(self, chat_id: int, ids: list[int]) -> list[RawEvent]:
+        await asyncio.sleep(0)
+        return self.server.messages(self.account_id, chat_id, ids)

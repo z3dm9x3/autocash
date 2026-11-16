@@ -1,0 +1,34 @@
+# Autocash — Telegram message processor. Install: see docs/ops.md.
+[Unit]
+Description=Autocash Telegram message processor
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+# The process sends READY=1 when the whole pipeline is up and WATCHDOG=1 from its main loop.
+# A hung loop stops the heartbeat; systemd kills and restarts the process (NFT-16).
+WatchdogSec=30
+NotifyAccess=main
+Restart=always
+RestartSec=3
+TimeoutStartSec=300
+TimeoutStopSec=30
+# Intake into SQLite starts before READY; PostgreSQL may come up later (NFT-17).
+
+User=autocash
+Group=autocash
+WorkingDirectory=/opt/autocash
+EnvironmentFile=/etc/autocash/autocash.env
+ExecStart=/opt/autocash/.venv/bin/python -m autocash.cli.run --config /etc/autocash/config --data /var/lib/autocash
+
+# Sessions and the SQLite buffer are readable only by the service user (FT-1.9).
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/autocash
+
+[Install]
+WantedBy=multi-user.target

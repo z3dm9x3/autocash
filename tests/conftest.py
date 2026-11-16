@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import itertools
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -70,14 +71,25 @@ def pg_cluster() -> Iterator[PgCluster]:
     cluster = PgCluster()
     cluster.init()
     cluster.start()
+    asyncio.run(_drop_leftovers(cluster))
     try:
         yield cluster
     finally:
         cluster.destroy()
 
 
+async def _drop_leftovers(cluster: PgCluster) -> None:
+    """Databases of a run that was killed before its teardown (the cluster is reused)."""
+    conn = await asyncpg.connect(cluster.dsn())
+    try:
+        for row in await conn.fetch("SELECT datname FROM pg_database WHERE datname ~ '^t[0-9]+$'"):
+            await conn.execute(f"DROP DATABASE IF EXISTS {row['datname']} WITH (FORCE)")
+    finally:
+        await conn.close()
+
+
 @pytest.fixture
-async def pg_dsn(pg_cluster: PgCluster) -> str:
+async def pg_dsn(pg_cluster: PgCluster) -> AsyncIterator[str]:
     if not pg_cluster.running:
         pg_cluster.start()
     name = f"t{next(_db_counter)}"
@@ -86,7 +98,16 @@ async def pg_dsn(pg_cluster: PgCluster) -> str:
         await conn.execute(f"CREATE DATABASE {name}")
     finally:
         await conn.close()
-    return pg_cluster.dsn(name)
+    yield pg_cluster.dsn(name)
+    # Every database takes ~8 MB: drop it right after the test, not with the whole cluster,
+    # so a full run does not eat the disk.
+    if not pg_cluster.running:
+        pg_cluster.start()
+    conn = await asyncpg.connect(pg_cluster.dsn())
+    try:
+        await conn.execute(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)")
+    finally:
+        await conn.close()
 
 
 def write_config(path: Path, config: dict[str, Any]) -> Path:

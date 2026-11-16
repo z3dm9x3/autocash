@@ -121,7 +121,31 @@ retention:
 sorter:
   unknown_summary_interval_s: 3600
 
-# OPEN-QUESTION: FT-11.7 - time norms per stage, seconds (used from stage 1c)
-stage_norms_s: {buffered: 0.2, in_pg: 0.5, sorted: 0.7, module_queued: 1.0, module_done: 10.0}
+# OPEN-QUESTION: FT-11.7 - how long a task may wait for the next stage, seconds; over it the
+# task is marked "stuck" and listed by /stuck (stage names: autocash/core/trace/monitor.py)
+stage_norms_s: {in_pg: 2, sorted: 2, module_done: 30, out_assigned: 60, out_sending: 60, out_delivered: 30}
+
+trace:
+  stuck_check_s: 5
+  mass_stuck_threshold: 20           # OPEN-QUESTION: FT-11.7 - stuck tasks on one stage that raise an alarm
+  rollup_interval_s: 60              # hourly stage metrics are recomputed this often
+  purge_interval_s: 3600             # detailed traces older than retention.trace_days are removed
+
+# FT-12.1, 12.2: user roles; extend the list to add a role
+user_roles: [player, casher, manager, admin, support, dev]
+
+# OPEN-QUESTION: FT-12.4 - user role -> source role ("*" = any) -> commands ("*" = all)
+permissions:
+  admin: {"*": ["*"]}
+  dev: {"*": ["*"]}
+  manager: {"*": [status, accounts, coverage, queue, trace, stuck, metrics]}
+  support: {"*": [status, trace]}
+
+commands:
+  heavy: [metrics]                   # FT-12.6: confirmed at once, the result comes when ready
+
+reports:
+  statement_timeout_ms: 1000         # NFT-15: own connections for reports and read commands
+  pool_size: 2
 
 report_timezone: Europe/Moscow       # NFT-19: day boundary for reports; stored timestamps are UTC

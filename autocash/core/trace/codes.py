@@ -38,6 +38,7 @@ class Reason(StrEnum):
     MODULE_TIMEOUT = "MODULE_TIMEOUT"
     UNKNOWN_TYPE = "UNKNOWN_TYPE"
     ACCESS_DENIED = "ACCESS_DENIED"  # amendment to the TZ, see AGENTS.md
+    CANCELLED_BY_USER = "CANCELLED_BY_USER"  # /cancel (stage 1c, docs/decisions.md D-1c-4)
 
 
 # code -> (meaning, typical status); seeded into the reason_codes table.
@@ -56,4 +57,5 @@ REASONS: dict[Reason, tuple[str, str]] = {
     Reason.MODULE_TIMEOUT: ("таймаут модуля", "waiting"),
     Reason.UNKNOWN_TYPE: ("сообщение без подходящего правила", "skipped"),
     Reason.ACCESS_DENIED: ("недостаточно прав", "cancelled"),
+    Reason.CANCELLED_BY_USER: ("отменено командой оператора", "cancelled"),
 }

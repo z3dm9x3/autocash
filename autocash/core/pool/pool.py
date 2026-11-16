@@ -470,6 +470,26 @@ class AccountPool:
             self.last_event[ev.chat_id] = time.monotonic()
             await self._handler(ev)
 
+    async def reread(self, chat_id: int, msg_ids: list[int], prefer: int | None = None) -> bool:
+        """Re-read messages through an active reader of the chat (FT-З.10): the events go the usual
+        way, so an edit missed by push becomes a new version; an unchanged message is a duplicate."""
+        readers = [a for a in self.membership.members(chat_id) if self.state(a) is AccountState.ACTIVE]
+        if not readers:
+            return False
+        acc = self.accounts[prefer if prefer in readers else readers[0]]
+        ids = sorted(set(msg_ids))
+        for i in range(0, len(ids), 100):
+            try:
+                events = await acc.limiter.call(READ, "getMessages", partial(acc.client.get_messages, chat_id,
+                                                                             ids[i:i + 100]))
+            except FloodWait:
+                return False
+            except TelegramError as exc:
+                self.apply_error(acc, exc.code, chat_id)
+                return False
+            await self.deliver(acc, events)
+        return True
+
     def caught_up(self, chat_id: int, pts: int) -> None:
         self._set_pts(chat_id, pts)
         self._seen_pts[chat_id] = max(self._seen_pts.get(chat_id, 0), pts)

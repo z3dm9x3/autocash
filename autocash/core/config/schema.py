@@ -73,7 +73,7 @@ class RuleCfg(Strict):
     type: str
     enabled: bool = True
     when: WhenCfg = WhenCfg()
-    # field name -> source: "Label", "Label.subfield", "$header", "$command", "$args"
+    # field name -> source: "Label", "Label.subfield", "$header", "$command", "$args", "$markers"
     fields: dict[str, str] = {}
     # Field names forming the ordering key; falls back to the chat (FT-6.2).
     order_key: list[str] = []
@@ -216,10 +216,45 @@ class SorterCfg(Strict):
     queue_batches: int = 64
 
 
+class OperatorCommandsCfg(Strict):
+    # Heavy reports: confirmed at once, the result is delivered when ready (FT-12.6).
+    heavy: list[str] = ["metrics"]
+    ack_text: str = "Команда принята, отчёт готовится и придёт отдельным сообщением."
+
+
+class TraceCfg(Strict):
+    stuck_check_s: float = 5.0
+    # OPEN-QUESTION: FT-11.7 — this many stuck tasks on one stage raise an alarm.
+    mass_stuck_threshold: int = 20
+    rollup_interval_s: float = 60.0
+    purge_interval_s: float = 3600.0
+
+
+class ReportsCfg(Strict):
+    # NFT-15: reports and read commands use their own connections with a statement timeout.
+    statement_timeout_ms: int = 1000
+    pool_size: int = 2
+
+
+DEFAULT_USER_ROLES = ["player", "casher", "manager", "admin", "support", "dev"]
+
+
 class Config(Strict):
     service_chats: ServiceChatsCfg = ServiceChatsCfg()
     # user_id -> global roles (FT-12.1); source-bound roles live in sources[].senders
     users: dict[int, list[str]] = {}
+    # FT-12.1, 12.2: the list of user roles, extended by configuration.
+    user_roles: list[str] = DEFAULT_USER_ROLES
+    # OPEN-QUESTION: FT-12.4 — user role -> source role ("*" = any) -> commands ("*" = all).
+    permissions: dict[str, dict[str, list[str]]] = {
+        "admin": {"*": ["*"]},
+        "dev": {"*": ["*"]},
+        "manager": {"*": ["status", "accounts", "coverage", "queue", "trace", "stuck", "metrics"]},
+        "support": {"*": ["status", "trace"]},
+    }
+    commands: OperatorCommandsCfg = OperatorCommandsCfg()
+    trace: TraceCfg = TraceCfg()
+    reports: ReportsCfg = ReportsCfg()
     defaults: DefaultsCfg = DefaultsCfg()
     sources: list[SourceCfg] = []
     manifest: ManifestCfg = ManifestCfg()
@@ -235,9 +270,11 @@ class Config(Strict):
     poll: PollCfg = PollCfg()
     retention: RetentionCfg = RetentionCfg()
     sorter: SorterCfg = SorterCfg()
-    # OPEN-QUESTION: FT-11.7 — time norms per stage, seconds (used from stage 1c).
+    # OPEN-QUESTION: FT-11.7 — norm of time a task may wait for the next stage, seconds
+    # (stage names: autocash/core/trace/monitor.py). Over the norm the task is marked "stuck".
     stage_norms_s: dict[str, float] = Field(
-        default={"buffered": 0.2, "in_pg": 0.5, "sorted": 0.7, "module_queued": 1.0, "module_done": 10.0}
+        default={"in_pg": 2.0, "sorted": 2.0, "module_done": 30.0, "out_assigned": 60.0, "out_sending": 60.0,
+                 "out_delivered": 30.0}
     )
     # NFT-19: day boundary for reports; all stored timestamps are UTC.
     report_timezone: str = "Europe/Moscow"
@@ -253,6 +290,14 @@ class Config(Strict):
                 raise ValueError(f"source {src.chat_id}: unknown template {src.template!r}")
         if self.defaults.private_template is not None and self.defaults.private_template not in self.templates:
             raise ValueError(f"defaults.private_template: unknown template {self.defaults.private_template!r}")
+        known_roles = set(self.user_roles)
+        for user_id, roles in self.users.items():
+            unknown_roles = set(roles) - known_roles
+            if unknown_roles:
+                raise ValueError(f"users.{user_id}: unknown roles {sorted(unknown_roles)} (see user_roles)")
+        unknown_roles = set(self.permissions) - known_roles
+        if unknown_roles:
+            raise ValueError(f"permissions: unknown user roles {sorted(unknown_roles)} (see user_roles)")
         for name, tpl in self.templates.items():
             ids = [r.id for r in tpl.rules]
             if len(ids) != len(set(ids)):

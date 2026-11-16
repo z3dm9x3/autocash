@@ -297,13 +297,15 @@ class SqliteBuffer:
             )
             return cur.rowcount
         if op.kind == "stats":
-            pending, total = conn.execute(
-                "SELECT count(*) FILTER (WHERE uploaded_at IS NULL), count(*) FROM events"
+            pending, total, oldest = conn.execute(
+                "SELECT count(*) FILTER (WHERE uploaded_at IS NULL), count(*), "
+                "min(buffered_at) FILTER (WHERE uploaded_at IS NULL) FROM events"
             ).fetchone()
             waiting = conn.execute(
                 "SELECT wait_reason, count(*) FROM events WHERE uploaded_at IS NULL AND wait_reason IS NOT NULL "
                 "GROUP BY wait_reason"
             ).fetchall()
             return {"pending": pending, "total": total, "waiting": dict(waiting), "size": self._size(),
-                    "level": self.level, "dropped": self.dropped}
+                    "level": self.level, "dropped": self.dropped,
+                    "oldest_age": time.time() - oldest if oldest is not None else 0.0}
         raise ValueError(op.kind)

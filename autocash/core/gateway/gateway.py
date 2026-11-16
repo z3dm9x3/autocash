@@ -70,6 +70,7 @@ class Gateway:
         self._announced: set[int] = set()
         self._last_hash: OrderedDict[tuple[int, int, int], tuple[str, int]] = OrderedDict()
         self.accepted = 0
+        self.on_command: Callable[[dict[str, Any]], None] | None = None
         self.duplicates = 0
         self.rejected = 0
         self.ignored = 0
@@ -170,6 +171,8 @@ class Gateway:
         result = await self._buffer.append(rec)
         if result > 0:
             self.accepted += 1
+            if rec.get("is_command") and rec.get("event") == "new" and self.on_command is not None:
+                self.on_command(rec)  # the emergency channel answers it if PostgreSQL is down (NFT-18)
         elif result == 0:
             self.duplicates += 1  # the same update came again (push and getChannelDifference)
         else:
