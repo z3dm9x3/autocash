@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -42,11 +42,16 @@ class Runtime:
     manifest: CompiledManifest
     sources: dict[int, SourceRuntime]
     unknown_policy: Policy
+    private_rules: list[CompiledRule] = field(default_factory=list)
 
     def source(self, chat_id: int) -> SourceRuntime:
         src = self.sources.get(chat_id)
         if src is not None:
             return src
+        if chat_id > 0:
+            # A private dialog: one shared policy for all of them, no "new chat" notification.
+            return SourceRuntime(SourceCfg(chat_id=chat_id, roles=["dm"]),
+                                 self.config.defaults.private_chat_policy, frozenset({"dm"}), self.private_rules)
         service = self.config.service_chats
         if chat_id in (service.logs, service.debug):
             # The system's own log groups are never processed (FT-2.4).
@@ -97,11 +102,12 @@ def build_runtime(raw: dict[str, Any]) -> Runtime:
         sources: dict[int, SourceRuntime] = {}
         for src in cfg.sources:
             sources[src.chat_id] = SourceRuntime(src, _policy(cfg, src), frozenset(src.roles), _rules(cfg, src))
+        private_rules = _rules(cfg, SourceCfg(chat_id=1, template=cfg.defaults.private_template))
     except (ValidationError, ManifestError, RuleError) as exc:
         raise ConfigError(str(exc)) from exc
     canonical = json.dumps(cfg.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
     version = hashlib.sha256(canonical.encode()).hexdigest()[:12]
-    return Runtime(version, cfg, manifest, sources, cfg.defaults.unknown_chat_policy)
+    return Runtime(version, cfg, manifest, sources, cfg.defaults.unknown_chat_policy, private_rules)
 
 
 def _policy(cfg: Config, src: SourceCfg) -> Policy:

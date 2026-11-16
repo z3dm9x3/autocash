@@ -21,8 +21,9 @@ def test_config_example_passes_the_schema() -> None:
     # The example spells out the defaults, so it must not drift away from the schema.
     explicit = Config.model_validate(raw)
     defaults = Config()
-    for section in ("buffer", "uploader", "writer", "queue", "output", "retention", "sorter"):
+    for section in ("buffer", "uploader", "writer", "queue", "output", "retention", "sorter", "coverage", "poll"):
         assert getattr(explicit, section) == getattr(defaults, section), section
+    assert explicit.pool.model_copy(update={"sessions_dir": None}) == defaults.pool
     assert explicit.stage_norms_s == defaults.stage_norms_s
 
 

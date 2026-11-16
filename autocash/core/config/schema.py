@@ -101,6 +101,10 @@ class SourceCfg(Strict):
 
 class DefaultsCfg(Strict):
     unknown_chat_policy: Policy = "meta"
+    # Private dialogs (players writing to a pool account) are not listed as sources one by one:
+    # they share this policy, the role "dm" and, optionally, a template (docs/decisions.md, D-1b-6).
+    private_chat_policy: Policy = "full"
+    private_template: str | None = None
     policy_by_role: dict[str, Policy] = {"channel": "presence", "logs": "ignore", "debug": "ignore"}
 
 
@@ -148,9 +152,49 @@ class ModuleCfg(Strict):
     config: dict[str, Any] = {}
 
 
+class PacingCfg(Strict):
+    """Send tempo of one account (FT-9.7). Zero switches a limit off."""
+
+    per_chat_interval_s: float
+    per_account_interval_s: float
+    group_per_minute: int
+
+
+class PoolCfg(Strict):
+    # Directory with encrypted session files; a file appearing or vanishing adds / removes an account.
+    sessions_dir: str | None = None
+    scan_interval_s: float = 2.0
+    api_concurrency: int = Field(default=1, ge=1, le=2)  # FT-10.1
+    # Active API calls per second by account kind. Telegram publishes no limits for user
+    # accounts, so the default is deliberately low (docs/decisions.md, D-1b-4).
+    api_rate_per_s: dict[str, float] = {"user": 1.0, "bot": 10.0}
+    backfill_share: float = Field(default=0.5, gt=0, le=1)  # backfill runs this much slower
+    flood_slowdown: float = 2.0
+    flood_recovery_s: float = 600
+    reconnect_s: float = 2.0
+    rebalance_s: float = 5.0  # OPEN-QUESTION: FT-1.7 — new duties take effect within N seconds
+
+
+class CoverageCfg(Strict):
+    # OPEN-QUESTION: FT-1.5 — required number of pool accounts in a chat, by source role.
+    required_by_role: dict[str, int] = {"kassa": 2}
+    default: int = 1
+
+
+class PollCfg(Strict):
+    chats_per_account: int = 10  # FT-2.5
+    silence_norm_s: float = 600  # a chat silent for longer is polled first
+    difference_limit: int = 100
+    idle_interval_s: float = 30  # used when the server names no timeout
+
+
 class OutputCfg(Strict):
-    concurrency: int = 1
-    min_interval_ms: int = 1000
+    pacing: dict[str, PacingCfg] = {
+        # Bots: published guidance - ~1 msg/s per chat, 20 per minute to a group, ~30 msg/s overall.
+        "bot": PacingCfg(per_chat_interval_s=1.0, per_account_interval_s=0.04, group_per_minute=20),
+        # User accounts: nothing is published; conservative (docs/decisions.md, D-1b-4).
+        "user": PacingCfg(per_chat_interval_s=3.0, per_account_interval_s=3.0, group_per_minute=10),
+    }
     max_attempts: int = 5
     retry_base_s: float = 2.0
     # OPEN-QUESTION: FT-9.6 — lifetime of outbound tasks by kind, seconds.
@@ -186,6 +230,9 @@ class Config(Strict):
     queue: QueueCfg = QueueCfg()
     modules: dict[str, ModuleCfg] = {}
     output: OutputCfg = OutputCfg()
+    pool: PoolCfg = PoolCfg()
+    coverage: CoverageCfg = CoverageCfg()
+    poll: PollCfg = PollCfg()
     retention: RetentionCfg = RetentionCfg()
     sorter: SorterCfg = SorterCfg()
     # OPEN-QUESTION: FT-11.7 — time norms per stage, seconds (used from stage 1c).
@@ -204,6 +251,8 @@ class Config(Strict):
             seen.add(src.chat_id)
             if src.template is not None and src.template not in self.templates:
                 raise ValueError(f"source {src.chat_id}: unknown template {src.template!r}")
+        if self.defaults.private_template is not None and self.defaults.private_template not in self.templates:
+            raise ValueError(f"defaults.private_template: unknown template {self.defaults.private_template!r}")
         for name, tpl in self.templates.items():
             ids = [r.id for r in tpl.rules]
             if len(ids) != len(set(ids)):

@@ -82,9 +82,35 @@ queue:
 # Modules are listed explicitly. `demo` counts messages and answers /ping: testing only.
 modules: {}
 
+# Pool of 1-10 accounts (FT-1.x). Accounts are the encrypted session files of this directory:
+# a file appearing adds an account, a file vanishing removes it, without a restart.
+pool:
+  sessions_dir: /var/lib/autocash/sessions
+  scan_interval_s: 2.0
+  api_concurrency: 1                 # FT-10.1: 1 or 2 simultaneous API calls per account
+  api_rate_per_s: {user: 1.0, bot: 10.0}   # active API calls; see docs/decisions.md, D-1b-4
+  backfill_share: 0.5
+  flood_slowdown: 2.0                # tempo divisor after a FloodWait
+  flood_recovery_s: 600
+  reconnect_s: 2.0
+  rebalance_s: 5.0                   # OPEN-QUESTION: FT-1.7
+
+coverage:
+  required_by_role: {kassa: 2}       # OPEN-QUESTION: FT-1.5
+  default: 1
+
+poll:
+  chats_per_account: 10              # FT-2.5
+  silence_norm_s: 600
+  difference_limit: 100
+  idle_interval_s: 30
+
 output:
-  concurrency: 1
-  min_interval_ms: 1000
+  # Send tempo by account kind (FT-9.7). Bots: Telegram's published guidance.
+  # User accounts: nothing is published, the values are conservative (D-1b-4).
+  pacing:
+    bot: {per_chat_interval_s: 1.0, per_account_interval_s: 0.04, group_per_minute: 20}
+    user: {per_chat_interval_s: 3.0, per_account_interval_s: 3.0, group_per_minute: 10}
   max_attempts: 5
   ttl_s: {command_reply: 300, client_reply: 1800, notify: 3600, bulk: 86400}   # OPEN-QUESTION: FT-9.6
 

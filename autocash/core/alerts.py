@@ -38,10 +38,11 @@ class Alerts:
     def debug(self, text: str) -> None:
         self._send("debug", text, emergency=False)
 
-    def alarm(self, text: str) -> None:
-        self._send("logs", text, emergency=True)
+    def alarm(self, text: str, exclude: int | None = None) -> None:
+        """An alarm goes out at once, without PostgreSQL; `exclude` is the account it is about."""
+        self._send("logs", text, emergency=True, exclude=exclude)
 
-    def _send(self, channel: str, text: str, *, emergency: bool) -> None:
+    def _send(self, channel: str, text: str, *, emergency: bool, exclude: int | None = None) -> None:
         self.history.append((time.time(), channel, text))
         log.warning("[%s] %s", channel, text)
         rt = self._store.current
@@ -49,7 +50,7 @@ class Alerts:
         if chat_id is None:
             return
         if emergency or not self._db.available:
-            task = asyncio.create_task(self._output.direct_send(chat_id, text))
+            task = asyncio.create_task(self._output.direct_send(chat_id, text, exclude))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
             return

@@ -29,14 +29,26 @@ class OwnMessages:
     def __init__(self, ttl_s: float = 120.0) -> None:
         self._ttl = ttl_s
         self._sent: dict[tuple[int, str], float] = {}
+        self._delivered: OrderedDict[tuple[int, int], None] = OrderedDict()
 
     def register(self, chat_id: int, text: str) -> None:
+        """Called right before a send: the push update may come before the answer to the send."""
         now = time.monotonic()
         if len(self._sent) > 2000:
             self._sent = {k: t for k, t in self._sent.items() if now - t < self._ttl}
         self._sent[(chat_id, text_hash(clean_markup(text)[0]))] = now
 
-    def is_own(self, chat_id: int, hash_: str) -> bool:
+    def delivered(self, chat_id: int, msg_id: int) -> None:
+        """Called with the id of a delivered message. Exact only where ids are shared by all
+        accounts (supergroups, channels): there it also marks later edits of our message."""
+        if chat_id <= -1_000_000_000_000:
+            self._delivered[(chat_id, msg_id)] = None
+            if len(self._delivered) > 20_000:
+                self._delivered.popitem(last=False)
+
+    def is_own(self, chat_id: int, hash_: str, msg_id: int | None = None) -> bool:
+        if msg_id is not None and (chat_id, msg_id) in self._delivered:
+            return True
         ts = self._sent.get((chat_id, hash_))
         return ts is not None and time.monotonic() - ts < self._ttl
 
@@ -56,13 +68,14 @@ class Gateway:
         self.pool_user_ids: set[int] = set()
         self.presence: dict[int, dict[str, Any]] = {}
         self._announced: set[int] = set()
-        self._last_hash: OrderedDict[tuple[int, int, int], str] = OrderedDict()
+        self._last_hash: OrderedDict[tuple[int, int, int], tuple[str, int]] = OrderedDict()
         self.accepted = 0
+        self.duplicates = 0
         self.rejected = 0
         self.ignored = 0
 
-    def _remember(self, key: tuple[int, int, int], hash_: str) -> None:
-        self._last_hash[key] = hash_
+    def _remember(self, key: tuple[int, int, int], value: tuple[str, int]) -> None:
+        self._last_hash[key] = value
         self._last_hash.move_to_end(key)
         if len(self._last_hash) > 50_000:
             self._last_hash.popitem(last=False)
@@ -80,6 +93,8 @@ class Gateway:
         rt = self._store.current
         trace_id = str(uuid.uuid4())
 
+        if ev.kind in ("joined", "left"):
+            return  # membership events are handled by the pool
         if ev.kind == "delete":
             scope = 0 if ev.chat_id is not None and ev.chat_kind in SHARED_ID_KINDS else ev.account_id
             if ev.chat_id is not None and rt.source(ev.chat_id).policy in ("ignore", "presence"):
@@ -120,14 +135,16 @@ class Gateway:
             text, hash_, features = ex.text, ex.text_hash, ex.features
             manifest_version = rt.manifest.version
             key = (scope, ev.chat_id, ev.msg_id)
-            if ev.kind == "edit" and self._last_hash.get(key) == hash_:
-                return  # the text did not change: no new version (FT-5.2)
-            self._remember(key, hash_)
+            last = self._last_hash.get(key)
+            if ev.kind == "edit" and last is not None and last[0] == hash_ and last[1] != version:
+                return  # a later edit that did not change the text: no new version (FT-5.2)
+            # The same version arriving on another pool account passes: it gets a "seen" mark (FT-2.2).
+            self._remember(key, (hash_, version))
             is_command = ex.command is not None and not ev.anonymous
         extracted = time.time()
         origin = "external"
         if own_sender:
-            origin = "system" if self._own.is_own(ev.chat_id, hash_) else "human"
+            origin = "system" if self._own.is_own(ev.chat_id, hash_, ev.msg_id) else "human"
         date_ts = ev.date.timestamp()
         if exact or ev.chat_kind == "private":
             dedup_key, dedup_exact = f"{ev.chat_id}:{ev.msg_id}", True
@@ -150,8 +167,10 @@ class Gateway:
         await self._store_record(rec)
 
     async def _store_record(self, rec: dict[str, Any]) -> None:
-        ok = await self._buffer.append(rec)
-        if ok:
+        result = await self._buffer.append(rec)
+        if result > 0:
             self.accepted += 1
+        elif result == 0:
+            self.duplicates += 1  # the same update came again (push and getChannelDifference)
         else:
             self.rejected += 1

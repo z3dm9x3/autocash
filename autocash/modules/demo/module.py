@@ -21,6 +21,6 @@ class DemoModule(Module):
             "updated_at = now()",
             str(event.chat_id),
         )
-        # Never react to our own automatic messages (FT-2.10).
-        if event.msg_type == "command.ping" and event.record.origin != "system":
+        # Reactions fire only for senders outside the pool (FT-2.10).
+        if event.msg_type == "command.ping" and event.external:
             ctx.reply("pong", rule="ping", kind="command_reply")

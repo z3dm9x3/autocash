@@ -76,16 +76,20 @@ class Context:
 
     # ---- external actions: become outbound tasks ----------------------------------------
     def send(self, chat_id: int, text: str, *, rule: str, kind: str = "notify", reply_to: int | None = None,
-             rule_version: str | None = None) -> OutboundDraft:
+             rule_version: str | None = None, via_account: int | None = None) -> OutboundDraft:
+        """`via_account`: the account of a private dialog; groups are routed by the Output."""
         draft = OutboundDraft(chat_id=chat_id, text=text, rule=rule, kind=kind, reply_to=reply_to,
-                              rule_version=rule_version)
+                              rule_version=rule_version, via_account=via_account)
         self.drafts.append(draft)
         return draft
 
     def reply(self, text: str, *, rule: str, kind: str = "client_reply",
               rule_version: str | None = None) -> OutboundDraft:
         rec = self.event.record
-        return self.send(rec.chat_id, text, rule=rule, kind=kind, reply_to=rec.msg_id, rule_version=rule_version)
+        # In a private dialog the player is answered by the account they wrote to (FT-9.4).
+        via = rec.account_id if rec.chat_id > 0 else None
+        return self.send(rec.chat_id, text, rule=rule, kind=kind, reply_to=rec.msg_id, rule_version=rule_version,
+                         via_account=via)
 
     # ---- reads ---------------------------------------------------------------------------
     async def fetch(self, sql: str, *args: Any) -> list[Any]:
@@ -108,3 +112,10 @@ class Module(ABC):
     @abstractmethod
     async def handle(self, event: Event, ctx: Context) -> None:
         """Process one event. Must be idempotent; all effects go through `ctx`."""
+
+    async def reconcile(self, chat_id: int) -> bool:
+        """Hook: re-read open entities of a source from history after a gap (FT-2.7).
+
+        Modules implement it in stage 2. Return True when the source was reconciled.
+        """
+        return False

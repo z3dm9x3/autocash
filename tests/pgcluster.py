@@ -47,7 +47,7 @@ class PgCluster:
         self.port = _free_port()
         self.running = False
 
-    def _run(self, *args: str, timeout: float = 120) -> None:
+    def _run(self, *args: str, timeout: float = 300) -> None:
         subprocess.run(
             [str(self.bin / args[0]), *args[1:]], check=True, timeout=timeout,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -59,13 +59,15 @@ class PgCluster:
 
     def start(self) -> None:
         opts = f"-p {self.port} -c listen_addresses=127.0.0.1 -c max_connections=60"
-        self._run("pg_ctl", "-D", str(self.dir / "data"), "-l", str(self.dir / "pg.log"), "-w", "-o", opts,
-                  "start")
+        self._run("pg_ctl", "-D", str(self.dir / "data"), "-l", str(self.dir / "pg.log"), "-w", "-t", "240",
+                  "-o", opts, "start")
         self.running = True
 
     def stop(self, mode: str = "fast") -> None:
         if self.running:
-            self._run("pg_ctl", "-D", str(self.dir / "data"), "-m", mode, "-w", "stop")
+            # The shutdown checkpoint of a cluster with many test databases can take over a minute
+            # on a slow disk; pg_ctl gives up after 60 s by default.
+            self._run("pg_ctl", "-D", str(self.dir / "data"), "-m", mode, "-w", "-t", "240", "stop")
             self.running = False
 
     def destroy(self) -> None:

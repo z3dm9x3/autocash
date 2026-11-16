@@ -110,10 +110,11 @@ class SqliteBuffer:
         self._ops.put(_Op(kind, arg, fut))
         return fut
 
-    def append(self, record: dict[str, Any]) -> asyncio.Future[bool]:
+    def append(self, record: dict[str, Any]) -> asyncio.Future[int]:
         """Enqueue synchronously (keeps arrival order); await the result for durability.
 
-        Resolves to False when the record was rejected by the disk limit.
+        Resolves to 1 when stored, 0 when the same event is already in the buffer, -1 when the
+        record was rejected by the disk limit.
         """
         return self._submit("append", record)
 
@@ -235,23 +236,23 @@ class SqliteBuffer:
     def _append(self, conn: sqlite3.Connection, ops: list[_Op]) -> None:
         self._update_level(conn)
         now = time.time()
-        results: list[bool] = []
+        results: list[int] = []  # 1 stored, 0 duplicate, -1 rejected by the disk limit
         urgent = False
         try:
             conn.execute("BEGIN IMMEDIATE")
             for op in ops:
                 rec = op.arg
                 if self.level == "hard" and rec.get("src_priority", 5) > self._top_priority:
-                    results.append(False)
+                    results.append(-1)
                     continue
                 rec["buffered_at"] = now
-                conn.execute(
+                cur = conn.execute(
                     "INSERT OR IGNORE INTO events (ukey, trace_id, urgent, payload, buffered_at) VALUES (?,?,?,?,?)",
                     (rec["ukey"], rec["trace_id"], int(bool(rec.get("is_command"))),
                      json.dumps(rec, ensure_ascii=False), now),
                 )
                 urgent = urgent or bool(rec.get("is_command"))
-                results.append(True)
+                results.append(1 if cur.rowcount else 0)
             conn.execute("COMMIT")
         except Exception as exc:
             try:
@@ -262,7 +263,7 @@ class SqliteBuffer:
             for op in ops:
                 self._resolve(op.fut, exc=exc)
             return
-        self.dropped += results.count(False)
+        self.dropped += results.count(-1)
         assert self._loop is not None
         for op, ok in zip(ops, results, strict=True):
             self._resolve(op.fut, ok)

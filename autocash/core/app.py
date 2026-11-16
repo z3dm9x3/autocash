@@ -4,6 +4,7 @@ Queue manager -> Modules -> Output (item 3.1 of the TZ)."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -18,11 +19,15 @@ from autocash.core.config.loader import ConfigStore, Runtime
 from autocash.core.extractor.extractor import CompiledManifest, extract
 from autocash.core.gateway.gateway import Gateway, OwnMessages
 from autocash.core.output.output import Output
+from autocash.core.pool.poller import Poller
+from autocash.core.pool.pool import AccountPool
+from autocash.core.pool.scheduler import Scheduler
+from autocash.core.pool.sessions import ClientFactory, SessionError, SessionWatcher, load_key
 from autocash.core.queue.manager import QueueManager
 from autocash.core.sorter.sorter import Sorter
 from autocash.core.storage.pg import Database, is_connection_error
 from autocash.core.storage.writer import BatchWriter
-from autocash.core.telegram.api import Limiter, SimpleLimiter, TelegramClient
+from autocash.core.telegram.api import TelegramClient
 from autocash.core.uploader.uploader import Uploader
 from autocash.modules.api import Module
 
@@ -60,17 +65,19 @@ class App:
         config_path: Path,
         sqlite_path: Path,
         pg_dsn: str,
-        client: TelegramClient,
         modules: list[Module],
-        limiter: Limiter | None = None,
+        client: TelegramClient | None = None,
+        clients: list[TelegramClient] | None = None,
+        client_factory: ClientFactory | None = None,
         maintenance_interval_s: float = 60.0,
     ) -> None:
         self.store = ConfigStore(config_path)
         cfg = self.store.current.config
-        self.client = client
-        self.limiter: Limiter = limiter or SimpleLimiter(
-            cfg.output.concurrency, cfg.output.min_interval_ms / 1000
-        )
+        # Accounts connected at start; more join and leave at run time through `self.pool`
+        # or through the sessions directory (FT-1.2).
+        self._clients: list[TelegramClient] = [*([client] if client is not None else []), *(clients or [])]
+        self._client_factory = client_factory
+        self.sessions: SessionWatcher | None = None
         self.buffer = SqliteBuffer(
             sqlite_path, journal_mode=cfg.buffer.journal_mode, synchronous=cfg.buffer.synchronous,
             soft_limit_mb=cfg.buffer.soft_limit_mb, hard_limit_mb=cfg.buffer.hard_limit_mb,
@@ -80,13 +87,20 @@ class App:
         self.writer = BatchWriter(self.db, flush_interval_ms=cfg.writer.flush_interval_ms,
                                   batch_max=cfg.writer.batch_max)
         self.own = OwnMessages()
-        self.output = Output(self.store, self.db, self.writer, self.own)
-        self.output.set_account(client, self.limiter)
+        self.pool = AccountPool(self.store, self.db, self.writer)
+        self.scheduler = Scheduler(self.store, self.pool, self.writer)
+        self.poller = Poller(self.store, self.pool, self.scheduler)
+        self.output = Output(self.store, self.db, self.writer, self.own, self.pool, self.scheduler)
         self.alerts = Alerts(self.store, self.db, self.writer, self.output)
         self.gateway = Gateway(self.store, self.buffer, self.own, self.alerts.logs)
+        self.gateway.pool_user_ids = self.pool.user_ids
+        self.pool.bind(self.gateway.on_event, self.alerts.alarm, self.alerts.logs)
+        self.pool.subscribe(self.scheduler.request)
+        self.pool.subscribe(self.output.on_pool_change)
         self.queues = QueueManager(self.store, self.db, self.writer, self.output.enqueue, self.alerts.logs)
         for module in modules:
             self.queues.register(module)
+            self.pool.reconcilers.append(module.reconcile)
         self.sorter = Sorter(self.store, self.db, self.writer, self.queues.dispatch, self.queues.subscribers,
                              self.alerts.debug)
         self.uploader = Uploader(self.store, self.buffer, self.db, self.sorter.submit, self.sorter.recover_nowait)
@@ -110,35 +124,57 @@ class App:
         except BufferPragmaError as exc:
             # FT-4.5: alarm and stop.
             log.critical("%s", exc)
-            await self.client.start(_ignore)
+            self.pool.intake = False  # nothing may be accepted without the buffer
+            for client in self._clients:
+                await self.pool.add(client)
             self.alerts.alarm(f"Остановка: {exc}")
             await asyncio.sleep(0)
             await asyncio.gather(*self.alerts._tasks, return_exceptions=True)
-            await self.client.stop()
+            await self.pool.stop()
             raise
         # Intake into SQLite starts immediately and does not depend on PostgreSQL (NFT-17).
-        self.gateway.pool_user_ids.add(self.client.account_id)
-        await self.client.start(self.gateway.on_event)
-        self.gateway.pool_user_ids.add(self.client.account_id)
+        for client in self._clients:
+            await self.pool.add(client)
+        await self._start_sessions()
         self._tasks.append(asyncio.create_task(self._start_pipeline(), name="pipeline-start"))
+
+    async def _start_sessions(self) -> None:
+        cfg = self.store.current.config.pool
+        if not cfg.sessions_dir or self._client_factory is None:
+            return
+        try:
+            key = load_key()
+        except SessionError as exc:
+            self.alerts.alarm(f"Каталог сессий не используется: {exc}")
+            return
+        self.sessions = SessionWatcher(Path(cfg.sessions_dir), key, self._client_factory, self.pool,
+                                       cfg.scan_interval_s)
+        await self.sessions.start()
 
     async def _start_pipeline(self) -> None:
         await self.db.wait_available()
         await self.db.migrate()
         self.writer.start()
         self._record_config(self.store.current)
+        # Stored FloodWait pauses are applied before any active call is allowed (FT-10.3).
+        await self.pool.load_state()
         await self.queues.start()
         self.sorter.start()
         await self.sorter.recover()
         await self.output.start()
         self.uploader.start()
+        self.poller.start()
         self._tasks.append(asyncio.create_task(self._maintenance(), name="maintenance"))
         self.ready_at = time.time()
         self.ready.set()
         log.info("pipeline ready in %.2f s", self.ready_at - self.started_at)
 
     async def stop(self) -> None:
-        await self.client.stop()
+        if self.sessions is not None:
+            await self.sessions.stop()
+        await self.poller.stop()
+        self.scheduler.stop()
+        await self.pool.stop()
         for task in [*self._tasks, *self._bg]:
             task.cancel()
         await asyncio.gather(*self._tasks, *self._bg, return_exceptions=True)
@@ -146,6 +182,10 @@ class App:
         await self.sorter.stop()
         await self.queues.stop()
         await self.output.stop()
+        if self.ready.is_set() and self.db.available:
+            # Update counters of chats and the last state changes: a restart continues from them.
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self.writer.flush(), 3.0)
         await self.writer.stop(drain=False)
         await self.buffer.stop()
         await self.db.close()
@@ -261,16 +301,11 @@ class App:
             queues = self.queues.stats()
             busy = (
                 stats["pending"] or len(self.writer) or self.sorter._queue.qsize()
-                or self.uploader.busy or self.sorter.busy or self.output.busy or self.output._timers
+                or self.uploader.busy or self.sorter.busy or self.output.busy or self.poller.busy
                 or any(q["size"] or q["running"] or q["overflow"] for q in queues.values())
-                or self.output._queue.qsize() or self.output._queued
             )
             stable = 0 if busy else stable + 1
             if stable >= 3:
                 await self.writer.flush()
                 return
         raise TimeoutError("pipeline did not become idle")
-
-
-async def _ignore(event: Any) -> None:
-    return None

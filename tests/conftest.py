@@ -56,7 +56,10 @@ BASE_CONFIG: dict[str, Any] = {
         }
     },
     "uploader": {"batch_interval_ms": 50, "retry_max_s": 0.5},
-    "output": {"min_interval_ms": 0},
+    # Tests run without send pacing and without an API tempo unless a test sets them.
+    "output": {"pacing": {kind: {"per_chat_interval_s": 0, "per_account_interval_s": 0, "group_per_minute": 0}
+                          for kind in ("user", "bot")}},
+    "pool": {"api_rate_per_s": {"user": 0, "bot": 0}, "reconnect_s": 0.1, "rebalance_s": 2.0},
 }
 
 _db_counter = itertools.count(1)
@@ -117,11 +120,15 @@ async def app_factory(
 ) -> AsyncIterator[AppFactory]:
     apps: list[App] = []
 
-    def factory(*, modules: list[Module] | None = None, cfg: dict[str, Any] | None = None) -> App:
+    def factory(*, modules: list[Module] | None = None, cfg: dict[str, Any] | None = None,
+                accounts: tuple[int, ...] = (ACCOUNT,), server: FakeTelegram | None = None,
+                **kwargs: Any) -> App:
         path = write_config(tmp_path / "config.yaml", cfg or config)
+        tg = server or fake
         app = App(
             config_path=path, sqlite_path=tmp_path / "buffer.sqlite", pg_dsn=pg_dsn,
-            client=fake.client(ACCOUNT), modules=modules if modules is not None else [DemoModule()],
+            clients=[tg.client(a) for a in accounts], modules=modules if modules is not None else [DemoModule()],
+            **kwargs,
         )
         apps.append(app)
         return app
