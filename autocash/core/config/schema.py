@@ -279,6 +279,16 @@ class ReactionsCfg(Strict):
     rules: list[ReactionRuleCfg] = []
 
 
+class BackfillCfg(Strict):
+    days: float = 30  # OPEN-QUESTION: stage 4 — how far back the history is loaded
+    batch: int = Field(default=100, ge=1, le=100)  # messages per request
+    interval_s: float = 1.0  # pause of a chat between its requests: the live flow comes first
+    chats_at_once: int = 4
+    # The next batch waits while this many events are still in the pipeline (buffer, sorter,
+    # module queues): the history must not stand in front of the live flow (NFT-6, NFT-8).
+    max_backlog: int = 60
+
+
 class Config(Strict):
     service_chats: ServiceChatsCfg = ServiceChatsCfg()
     # user_id -> global roles (FT-12.1); source-bound roles live in sources[].senders
@@ -296,6 +306,7 @@ class Config(Strict):
     trace: TraceCfg = TraceCfg()
     reports: ReportsCfg = ReportsCfg()
     reactions: ReactionsCfg = ReactionsCfg()
+    backfill: BackfillCfg = BackfillCfg()
     defaults: DefaultsCfg = DefaultsCfg()
     sources: list[SourceCfg] = []
     manifest: ManifestCfg = ManifestCfg()

@@ -33,7 +33,8 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-COMMANDS = ("trace", "stuck", "retry", "cancel", "queue", "accounts", "coverage", "status", "reload", "metrics")
+COMMANDS = ("trace", "stuck", "retry", "cancel", "queue", "accounts", "coverage", "status", "reload", "metrics",
+            "backfill")
 EMERGENCY = ("status", "accounts")  # served without PostgreSQL (NFT-18)
 _LINK = re.compile(r"(?:https?://)?t\.me/c/(\d+)/(\d+)")
 _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -154,6 +155,8 @@ class SystemCommands(Module):
             return f"Конфигурация перезагружена: версия {detail}" if ok else f"Конфигурация не применена: {detail}"
         if name == "metrics":
             return await self.metrics(args)
+        if name == "backfill":
+            return await self.backfill(args)
         raise CommandError(f"Неизвестная команда /{name}")
 
     # ---- /accounts, /coverage, /status: in-memory, no PostgreSQL --------------------------------
@@ -209,9 +212,46 @@ class SystemCommands(Module):
             if app.output.stats().get("waiting") else "Вывод: ожидающих нет",
             "Зависшие: " + (", ".join(f"{s} {n}" for s, n in sorted(stuck.items())) or "нет"),
             f"Без правила (unknown): {sum(app.sorter.unknown.values())}",
+            f"История: пачек {app.backfill.batches}"
+            + (f", FloodWait {app.backfill.flood_waits}" if app.backfill.flood_waits else ""),
         ]
         if not app.pool.active():
             lines.append("⚠️ Нет ни одного активного аккаунта")
+        return "\n".join(lines)
+
+    # ---- /backfill (stage 4) ---------------------------------------------------------------------------
+    async def backfill(self, args: list[str]) -> str:
+        """/backfill start [days] [all | chat_id …] | pause | resume | status"""
+        bf = self.app.backfill
+        action = args[0] if args else "status"
+        if action == "start":
+            days: float | None = None
+            chats: list[int] = []
+            for a in args[1:]:
+                if a == "all":
+                    continue
+                if a.lstrip("-").isdigit() and a.startswith("-"):
+                    chats.append(int(a))
+                elif a.replace(".", "", 1).isdigit():
+                    days = float(a)
+                else:
+                    raise CommandError("Формат: /backfill start [дни] [all | chat_id …]")
+            n = await bf.begin(chats or None, days)
+            return f"Загрузка истории запущена для {n} чатов."
+        if action == "pause":
+            return f"Загрузка истории приостановлена ({await bf.pause()} чатов)."
+        if action == "resume":
+            return f"Загрузка истории продолжена ({await bf.resume()} чатов)."
+        if action != "status":
+            raise CommandError("Формат: /backfill start [дни] [all | chat_id …] | pause | resume | status")
+        rows = await bf.progress()
+        if not rows:
+            return "Загрузка истории не запускалась."
+        lines = [f"Загрузка истории: {sum(r['loaded'] for r in rows)} сообщений, "
+                 + ", ".join(f"{s} {sum(1 for r in rows if r['status'] == s)}"
+                             for s in ("running", "paused", "done", "error") if any(r["status"] == s for r in rows))]
+        lines += [f"• {r['chat_id']}: {r['status']}, {r['loaded']}" + (f" ({r['last_error']})" if r["last_error"]
+                                                                        else "") for r in rows[:30]]
         return "\n".join(lines)
 
     # ---- /stuck, /metrics -----------------------------------------------------------------------

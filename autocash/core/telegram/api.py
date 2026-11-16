@@ -93,6 +93,11 @@ class TelegramClient(Protocol):
 
     async def get_channel_difference(self, chat_id: int, pts: int, limit: int = 100) -> Difference: ...
 
+    async def get_history(self, chat_id: int, after_id: int, since: datetime, limit: int) -> list[RawEvent]:
+        """History FORWARD in time: messages with id > `after_id` (0: from `since` on), oldest first,
+        marked source="backfill". Forward, so that the stages of one key arrive in their order."""
+        ...
+
     async def get_messages(self, chat_id: int, ids: list[int]) -> list[RawEvent]:
         """Current state of the messages (a reconciliation re-read, FT-З.10); missing ones are skipped."""
         ...

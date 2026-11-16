@@ -118,7 +118,9 @@ class PgCluster:
         tmp.rename(self.data)  # only a complete cluster gets the final name
 
     def start(self) -> None:
-        opts = f"-p {self.port} -c listen_addresses=127.0.0.1 -c max_connections=60 -c fsync=off"
+        # A small WAL: tests create and drop many databases, and the disk of the dev machine is tight.
+        opts = (f"-p {self.port} -c listen_addresses=127.0.0.1 -c max_connections=60 -c fsync=off "
+                "-c wal_level=minimal -c max_wal_senders=0 -c max_wal_size=64MB -c min_wal_size=32MB")
         self._run("pg_ctl", "-D", str(self.data), "-l", str(self.dir / "pg.log"), "-w", "-t", "300",
                   "-o", opts, "start")
         self.running = True

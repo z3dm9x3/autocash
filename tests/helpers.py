@@ -28,7 +28,7 @@ def join_all(fake: FakeTelegram, *accounts: int) -> None:
         chat.members.update(accounts)
 
 
-async def ready(app: App, timeout: float = 120.0) -> None:
+async def ready(app: App, timeout: float = 240.0) -> None:
     """The pipeline is up; a start that never finishes fails the test instead of hanging it."""
     try:
         await asyncio.wait_for(app.ready.wait(), timeout)

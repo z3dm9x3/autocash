@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Awaitable
+from dataclasses import replace
+from datetime import datetime
 from typing import Any, TypeVar
 
 from telethon import TelegramClient as _Telethon
@@ -295,6 +297,15 @@ class TelethonClient:
             if info is not None:
                 out.append(info)
         return out
+
+    async def get_history(self, chat_id: int, after_id: int, since: datetime, limit: int) -> list[RawEvent]:
+        # reverse=True reads from old to new: from `since` at first, then after the last loaded id.
+        kwargs: dict[str, Any] = {"min_id": after_id} if after_id else {"offset_date": since}
+        msgs = await self._call("messages.getHistory",
+                                self._client.get_messages(chat_id, limit=limit, reverse=True, **kwargs))
+        return [replace(message_event("edit" if getattr(m, "edit_date", None) else "new", self.account_id, m),
+                        source="backfill")
+                for m in msgs if m is not None and not isinstance(m, (types.MessageEmpty, types.MessageService))]
 
     async def get_messages(self, chat_id: int, ids: list[int]) -> list[RawEvent]:
         msgs = await self._call("channels.getMessages", self._client.get_messages(chat_id, ids=ids))

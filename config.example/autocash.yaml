@@ -94,6 +94,13 @@ modules:
       merge_confirm_threshold: 6       # OPEN-QUESTION: FT-И.3 - larger joins wait for a staff decision
   reactions: {}                        # rules below; the module must be listed to run them
 
+# Loading the history of chats (stage 4): /backfill start [days] [all | chat_id], pause, resume, status.
+backfill:
+  days: 30                             # OPEN-QUESTION: stage 4 - how far back the history is loaded
+  batch: 100                           # messages per request
+  interval_s: 1.0                      # pause of a chat between requests: the live flow comes first
+  chats_at_once: 4
+
 # Reaction rules (FT-8.5): when -> if (JSONLogic) -> then (actions). Changed by /reload.
 reactions:
   autoreply_pause_min: 30              # OPEN-QUESTION: FT-8.10 - no auto answer N minutes after a human one

@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -224,6 +224,18 @@ class FakeTelegram:
         return [self._event("edit" if m.edit_date else "new", m, chat, account_id) for m in chat.messages
                 if not m.deleted and m.id_for(account_id) in wanted]
 
+    def history(self, account_id: int, chat_id: int, after_id: int, since: datetime, limit: int) -> list[RawEvent]:
+        self._api_call(account_id, "getHistory")
+        chat = self.chats.get(chat_id)
+        if chat is None or account_id not in chat.members:
+            raise TelegramError("CHANNEL_PRIVATE")
+        newer = [m for m in chat.messages
+                 if not m.deleted and (0 in m.ids or account_id in m.ids)
+                 and (m.id_for(account_id) > after_id if after_id else m.date >= since)]
+        newer.sort(key=lambda m: m.id_for(account_id))
+        return [replace(self._event("edit" if m.edit_date else "new", m, chat, account_id), source="backfill")
+                for m in newer[:limit]]
+
     def dialogs(self, account_id: int) -> list[DialogInfo]:
         self._api_call(account_id, "getDialogs")
         return [
@@ -300,3 +312,7 @@ class FakeClient:
     async def get_messages(self, chat_id: int, ids: list[int]) -> list[RawEvent]:
         await asyncio.sleep(0)
         return self.server.messages(self.account_id, chat_id, ids)
+
+    async def get_history(self, chat_id: int, after_id: int, since: datetime, limit: int) -> list[RawEvent]:
+        await asyncio.sleep(0)
+        return self.server.history(self.account_id, chat_id, after_id, since, limit)

@@ -475,6 +475,14 @@ class QueueManager:
     ) -> None:
         module = runner.module
         rt = self._store.current
+        if failure is None and rec.source == "backfill" and ctx.drafts:
+            # History gets internal actions only (FT-8.8): no module may send anything for it.
+            skipped = [{"chat_id": d.chat_id, "kind": d.kind, "rule": d.rule} for d in ctx.drafts]
+            ctx.drafts.clear()
+            ctx.execute(
+                "INSERT INTO rule_log (trace_id, module, rule, config_version, input, actions) "
+                "VALUES ($1::uuid, $2, 'backfill.external_skipped', $3, '{}'::jsonb, $4::jsonb)",
+                rec.trace_id, module.name, rt.version, json.dumps(skipped, ensure_ascii=False))
         if failure is None:
             entry = _Commit(rec.trace_id, module.name, rec.ingest_id, queued_at, started, ctx.ops, ctx.drafts,
                             rt.config.output.ttl_s, rt.version, ctx.final)

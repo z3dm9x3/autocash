@@ -15,6 +15,7 @@ import asyncpg
 
 from autocash.actions.entities import expire_states, shutdown_executor
 from autocash.core.alerts import Alerts
+from autocash.core.backfill import Backfill
 from autocash.core.buffer.sqlite_buffer import BufferPragmaError, SqliteBuffer
 from autocash.core.commands.service import SystemCommands
 from autocash.core.config.loader import ConfigStore, Runtime
@@ -110,6 +111,7 @@ class App:
             self.add_module(module)
         self.gateway.on_command = self.commands.emergency
         self.monitor = TraceMonitor(self.store, self.db, self._buffer_backlog, self.alerts.alarm)
+        self.backfill = Backfill(self.store, self.db, self.pool, self.scheduler, self._pipeline_backlog)
         self.notifier = SystemdNotifier()
         self.sorter = Sorter(self.store, self.db, self.writer, self.queues.dispatch, self.queues.subscribers,
                              self.alerts.debug)
@@ -187,6 +189,7 @@ class App:
         self.uploader.start()
         self.poller.start()
         self.monitor.start()
+        self.backfill.start()
         for module in self.modules:
             if module.periodic_s:
                 self._tasks.append(asyncio.create_task(self._periodic(module, module.periodic_s),
@@ -200,6 +203,7 @@ class App:
     async def stop(self) -> None:
         self.notifier.stopping()
         await self.monitor.stop()
+        await self.backfill.stop()
         if self.sessions is not None:
             await self.sessions.stop()
         await self.poller.stop()
@@ -250,6 +254,12 @@ class App:
             except Exception as exc:
                 if not is_connection_error(exc):
                     log.exception("module %s: periodic work failed", module.name)
+
+    async def _pipeline_backlog(self) -> int:
+        """Events accepted but not yet handed to the modules, plus what waits in module queues."""
+        stats = await self.buffer.stats()
+        queued = sum(q["size"] for q in self.queues.stats().values())
+        return int(stats["pending"]) + self.sorter._queue.qsize() + queued
 
     async def _buffer_backlog(self) -> tuple[int, float, str | None]:
         stats = await self.buffer.stats()
