@@ -60,6 +60,7 @@ def run_child(mode: str, args: list[str], kill_after: float | None, marker: str 
     return code, "".join(lines)
 
 
+@pytest.mark.timeout(900)  # three child processes per run, each may take minutes on a slow machine
 @pytest.mark.parametrize("seed", [1, 2, 3])
 async def test_hard_reset_under_load_loses_nothing_and_sends_everything_once(
     app_factory: AppFactory, tmp_path: Path, pg_dsn: str, config: dict[str, Any], seed: int

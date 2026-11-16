@@ -8,6 +8,10 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 addopts = "-q"
+# No test may hang: one test gets 5 minutes at most (the thread method works on Windows too).
+# A whole run is capped from the outside: `timeout 2400 python -m pytest`.
+timeout = 300
+timeout_method = "thread"
 
 [tool.ruff]
 line-length = 120
