@@ -103,6 +103,14 @@ def build_runtime(raw: dict[str, Any]) -> Runtime:
         for src in cfg.sources:
             sources[src.chat_id] = SourceRuntime(src, _policy(cfg, src), frozenset(src.roles), _rules(cfg, src))
         private_rules = _rules(cfg, SourceCfg(chat_id=1, template=cfg.defaults.private_template))
+        # Reaction rules are checked before they apply: conditions, templates, actions (FT-13.2).
+        from autocash.core.reactions.engine import RuleConfigError, validate_rule
+
+        for rule in cfg.reactions.rules:
+            try:
+                validate_rule(rule)
+            except RuleConfigError as exc:
+                raise RuleError(str(exc)) from exc
     except (ValidationError, ManifestError, RuleError) as exc:
         raise ConfigError(str(exc)) from exc
     canonical = json.dumps(cfg.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)

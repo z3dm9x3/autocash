@@ -298,7 +298,13 @@ class QueueManager:
 
     def dispatch(self, rec: MessageRecord) -> None:
         """Deliver a sorted message to every subscribed module (FT-7.1)."""
-        targets = self._matching(rec.msg_type or UNKNOWN)
+        if (rec.msg_type or UNKNOWN) == UNKNOWN:
+            # Untyped messages go nowhere, except to a module that asked for this one (an answer
+            # to its question, stage 3); the task itself stays "skipped" with UNKNOWN_TYPE.
+            targets = [r for r in self._runners.values()
+                       if UNKNOWN in r.module.subscriptions and r.module.wants(rec)]
+        else:
+            targets = self._matching(rec.msg_type or UNKNOWN)
         for runner in self._runners.values():
             if runner in targets:
                 if runner.mq.offer(rec):

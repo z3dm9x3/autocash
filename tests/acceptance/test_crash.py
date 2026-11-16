@@ -46,7 +46,7 @@ async def test_kill_9_everything_accepted_is_processed_exactly_once(
 
     app = app_factory(cfg=config)  # the same SQLite file and the same database
     await app.start()
-    await app.ready.wait()
+    await asyncio.wait_for(app.ready.wait(), 120)
     await app.idle(timeout=60)
 
     pool = app.db.pool

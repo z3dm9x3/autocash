@@ -239,6 +239,46 @@ class ReportsCfg(Strict):
 DEFAULT_USER_ROLES = ["player", "casher", "manager", "admin", "support", "dev"]
 
 
+class CommandArgCfg(Strict):
+    name: str
+    # int: digits; ident: TGID / MelID, "tg:" or "mel:" prefix allowed (FT-12.5); word: one word;
+    # text: the rest of the line.
+    type: Literal["int", "ident", "word", "text"] = "text"
+    optional: bool = False
+
+
+class ReactionWhenCfg(Strict):
+    type: list[str] = []  # message types, masks allowed ("deposit.*")
+    command: str | None = None  # a command rule (FT-12.3)
+    args: list[CommandArgCfg] = []
+    timer: str | None = None  # fired by `schedule`
+
+
+class ReactionRuleCfg(Strict):
+    """FT-8.5: when -> if -> then, with priority, on/off and version."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    id: str
+    version: int = 1
+    enabled: bool = True
+    mode: Literal["live", "dry_run"] = "live"  # FT-8.6: dry_run plans and logs, sends nothing
+    priority: int = 5
+    autoreply: bool = False  # an automatic answer to a player: human pause and limits apply (FT-8.10)
+    when: ReactionWhenCfg = ReactionWhenCfg()
+    if_: Any = Field(default=None, alias="if")  # JSONLogic condition (docs/decisions.md D-3-1)
+    then: list[dict[str, Any]] = []
+
+
+class ReactionsCfg(Strict):
+    autoreply_pause_min: float = 30  # OPEN-QUESTION: FT-8.10 — no automatic answer N minutes after a human one
+    # NFT-12: automatic answers of user accounts are limited.
+    per_dialog_per_hour: int = 3
+    per_account_per_hour: int = 30
+    ask_timeout_s: float = 600
+    rules: list[ReactionRuleCfg] = []
+
+
 class Config(Strict):
     service_chats: ServiceChatsCfg = ServiceChatsCfg()
     # user_id -> global roles (FT-12.1); source-bound roles live in sources[].senders
@@ -255,6 +295,7 @@ class Config(Strict):
     commands: OperatorCommandsCfg = OperatorCommandsCfg()
     trace: TraceCfg = TraceCfg()
     reports: ReportsCfg = ReportsCfg()
+    reactions: ReactionsCfg = ReactionsCfg()
     defaults: DefaultsCfg = DefaultsCfg()
     sources: list[SourceCfg] = []
     manifest: ManifestCfg = ManifestCfg()
@@ -298,6 +339,9 @@ class Config(Strict):
         unknown_roles = set(self.permissions) - known_roles
         if unknown_roles:
             raise ValueError(f"permissions: unknown user roles {sorted(unknown_roles)} (see user_roles)")
+        rule_ids = [r.id for r in self.reactions.rules]
+        if len(rule_ids) != len(set(rule_ids)):
+            raise ValueError("reactions: duplicate rule ids")
         for name, tpl in self.templates.items():
             ids = [r.id for r in tpl.rules]
             if len(ids) != len(set(ids)):

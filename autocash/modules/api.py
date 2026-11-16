@@ -114,6 +114,8 @@ class Services:
     reread: Callable[[int, list[int]], Awaitable[bool]]  # chat, message ids -> re-read through the pool
     notify: Callable[[str], None]  # a message to the staff group `logs`
     runtime: Callable[[], Any]  # the current configuration Runtime
+    enqueue: Callable[[list[int]], None] = lambda ids: None  # hand outbound tasks written outside an event
+    account_state: Callable[[int], str] = lambda account_id: "active"
 
 
 TraceResolver = Callable[[str], Awaitable[list[str]]]
@@ -135,6 +137,10 @@ class Module(ABC):
 
     async def periodic(self) -> None:  # noqa: B027 - optional hook, a no-op unless the module needs it
         """Periodic work of the module (sweeps, reconciliation); runs outside event handling."""
+
+    def wants(self, record: MessageRecord) -> bool:
+        """Last filter of delivery; for "unknown" a module gets the message only if it wants it."""
+        return record.msg_type != "unknown"
 
     def trace_resolver(self) -> TraceResolver | None:
         """Turns a module key (e.g. an entity id) into trace ids for /trace."""

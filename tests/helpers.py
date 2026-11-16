@@ -28,10 +28,18 @@ def join_all(fake: FakeTelegram, *accounts: int) -> None:
         chat.members.update(accounts)
 
 
+async def ready(app: App, timeout: float = 120.0) -> None:
+    """The pipeline is up; a start that never finishes fails the test instead of hanging it."""
+    try:
+        await asyncio.wait_for(app.ready.wait(), timeout)
+    except TimeoutError:
+        raise TimeoutError(f"the pipeline did not start in {timeout} s (PostgreSQL, migrations?)") from None
+
+
 async def started(app: App) -> App:
     """Start the app and wait until every account knows its chats and duties are spread."""
     await app.start()
-    await app.ready.wait()
+    await ready(app)
     await wait_for(lambda: all(a.dialogs_loaded for a in app.pool.live()), what="dialogs")
     await wait_for(lambda: app.scheduler.rebalances > 0 and app.scheduler.rebalanced_at >= app.pool.changed_at,
                    what="duties")

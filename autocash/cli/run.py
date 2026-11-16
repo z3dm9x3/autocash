@@ -25,6 +25,7 @@ from pathlib import Path
 from autocash.core.app import App
 from autocash.core.config.loader import ConfigError
 from autocash.core.pool.sessions import SessionData
+from autocash.core.reactions.module import ReactionsModule
 from autocash.core.telegram.api import TelegramClient
 from autocash.core.telegram.telethon_client import TelethonClient
 from autocash.modules.api import Module
@@ -36,7 +37,8 @@ log = logging.getLogger("autocash")
 ROOT = Path(__file__).resolve().parents[2]
 
 
-AVAILABLE: dict[str, type[Module]] = {"demo": DemoModule, "players": PlayersModule, "deposits": DepositsModule}
+AVAILABLE: dict[str, type[Module]] = {"demo": DemoModule, "players": PlayersModule, "deposits": DepositsModule,
+                                      "reactions": ReactionsModule}
 
 
 def build_modules(app_config_modules: dict[str, object]) -> list[Module]:

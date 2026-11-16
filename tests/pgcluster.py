@@ -47,11 +47,45 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
+class _DirLock:
+    """An OS file lock on the cluster directory; released by the OS when the process dies."""
+
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._f = path.open("a+b")
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                self._f.seek(0)
+                msvcrt.locking(self._f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self._f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined,unused-ignore]
+        except OSError:
+            self._f.close()
+            raise
+
+
 class PgCluster:
     def __init__(self, directory: Path | None = None) -> None:
         self.bin = find_pg_bin()
-        default = Path(tempfile.gettempdir()) / "autocash_pg_test"
-        self.dir = directory or Path(os.environ.get("AUTOCASH_PG_TESTDIR", default))
+        base = Path(os.environ.get("AUTOCASH_PG_TESTDIR", Path(tempfile.gettempdir()) / "autocash_pg_test"))
+        # Two test runs at once must not share a server: the second takes the next free directory.
+        self.dir = directory or base
+        self._lock: _DirLock | None = None
+        if directory is None:
+            for n in range(1, 6):
+                cand = base if n == 1 else base.with_name(f"{base.name}_{n}")
+                try:
+                    self._lock = _DirLock(cand.with_name(cand.name + ".lock"))
+                except OSError:
+                    continue
+                self.dir = cand
+                break
+            else:
+                raise RuntimeError("all test cluster directories are busy")
         self.port = _free_port()
         self.running = False
 

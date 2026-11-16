@@ -166,7 +166,7 @@ async def app_factory(
 async def app(app_factory: AppFactory) -> App:
     application = app_factory()
     await application.start()
-    await application.ready.wait()
+    await asyncio.wait_for(application.ready.wait(), 120)
     return application
 
 

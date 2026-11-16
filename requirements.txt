@@ -7,3 +7,4 @@ google-re2>=1.1
 pymorphy3>=2.0
 # Time zone database for zoneinfo where the OS has none (Windows); harmless on Linux.
 tzdata>=2024.1
+Jinja2>=3.1

@@ -12,6 +12,8 @@ addopts = "-q"
 # A whole run is capped from the outside: `timeout 2400 python -m pytest`.
 timeout = 300
 timeout_method = "thread"
+# The limit applies to the test body; fixtures have their own (initdb 600 s, pg_ctl 300 s, pipeline 120 s).
+timeout_func_only = true
 
 [tool.ruff]
 line-length = 120

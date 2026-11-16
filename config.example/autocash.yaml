@@ -92,6 +92,30 @@ modules:
   players:
     config:
       merge_confirm_threshold: 6       # OPEN-QUESTION: FT-И.3 - larger joins wait for a staff decision
+  reactions: {}                        # rules below; the module must be listed to run them
+
+# Reaction rules (FT-8.5): when -> if (JSONLogic) -> then (actions). Changed by /reload.
+reactions:
+  autoreply_pause_min: 30              # OPEN-QUESTION: FT-8.10 - no auto answer N minutes after a human one
+  per_dialog_per_hour: 3               # NFT-12: limits of automatic answers
+  per_account_per_hour: 30
+  rules:
+    - id: scam
+      when: {command: scam, args: [{name: id, type: ident}]}
+      then:
+        - {action: call, name: resolve_player, ident: "{{ args.id }}", as: p}
+        - action: if
+          cond: {"==": [{var: r.p.status}, ambiguous]}
+          then: [{action: ask, text: "Уточните: tg:{{ args.id }} или mel:{{ args.id }}", arg: id}]
+          else:
+            - {action: call, name: player_mark, kind: scam, ident: "{{ r.p.ident }}"}
+            - {action: reply, text: "Страйк записан: {{ r.p.ident }}"}
+    - id: example_autoreply
+      enabled: false                   # an example: switch on after a dry run (mode: dry_run)
+      mode: dry_run
+      autoreply: true
+      when: {type: [player.question]}
+      then: [{action: reply, text: "Оператор скоро ответит."}]
 
 # Pool of 1-10 accounts (FT-1.x). Accounts are the encrypted session files of this directory:
 # a file appearing adds an account, a file vanishing removes it, without a restart.

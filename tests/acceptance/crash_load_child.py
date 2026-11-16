@@ -82,7 +82,7 @@ async def main(mode: str, config: str, sqlite: str, dsn: str, state: str, count:
             if i == 12:
                 print("FLOWING", flush=True)  # the parent starts the kill countdown from here
         await fake.drain()
-    await app.ready.wait()
+    await asyncio.wait_for(app.ready.wait(), 120)
     await app.idle(timeout=120)
     print("IDLE", flush=True)
     await app.stop()

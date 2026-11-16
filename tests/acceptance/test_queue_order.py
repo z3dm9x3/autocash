@@ -78,7 +78,7 @@ async def test_same_key_is_sequential_and_different_keys_are_parallel(
     recorder = Recorder()
     app = app_factory(modules=[recorder])
     await app.start()
-    await app.ready.wait()
+    await asyncio.wait_for(app.ready.wait(), 120)
 
     keys = ["A", "B", "C", "D", "E", "F"]
     per_key = 8
@@ -102,7 +102,7 @@ async def test_slow_module_does_not_delay_another_module(app_factory: AppFactory
     slow, fast = Slow(), Fast()
     app = app_factory(modules=[slow, fast])
     await app.start()
-    await app.ready.wait()
+    await asyncio.wait_for(app.ready.wait(), 120)
 
     total = 12
     posted = time.monotonic()
@@ -130,7 +130,7 @@ async def test_module_error_and_timeout_get_reason_codes_and_queue_goes_on(
     """FT-8.11: MODULE_ERROR / MODULE_TIMEOUT, the module queue keeps working."""
     app = app_factory(modules=[Broken()])
     await app.start()
-    await app.ready.wait()
+    await asyncio.wait_for(app.ready.wait(), 120)
 
     fake.post(KASSA, PLAYER, "note boom")
     fake.post(KASSA, PLAYER, "note hang")

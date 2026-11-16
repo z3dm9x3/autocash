@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
 from autocash.actions.entities import report
 from autocash.core.commands.rights import can_run
+from autocash.core.reactions.engine import register_action
 from autocash.core.trace.codes import Reason, Status
-from autocash.modules.api import Context, EntityDecl, Event, Module
+from autocash.modules.api import Context, EntityDecl, Event, Module, Services
 from autocash.modules.players import store
 
 COMMANDS = ("player", "player_deposits", "merge_ok", "merge_no", "split")
@@ -31,6 +32,36 @@ class PlayersModule(Module):
     config_model: ClassVar[type[BaseModel] | None] = PlayersConfig
     # Joins are serialized by an advisory lock anyway; one worker keeps them in arrival order.
     concurrency: ClassVar[int] = 1
+
+    def bind(self, services: Services) -> None:
+        super().bind(services)
+        # Actions for reaction rules (stage 3): the core calls them by name, knowing no players (P-1).
+        register_action("resolve_player", self._resolve_action)
+        register_action("player_mark", self._mark_action)
+
+    async def _resolve_action(self, p: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+        """{ident} -> {status: one | ambiguous | none, player_id, ident: "kind:value", players}."""
+        assert self.services is not None
+        arg = str(p.get("ident") or "").strip()
+        found = await store.resolve(self.services.db.pool, arg)
+        if found.ambiguous:
+            return {"status": "ambiguous", "players": found.ambiguous, "ident": arg}
+        if found.player_id is None:
+            kind, sep, _ = arg.partition(":")
+            ident = arg if sep and kind in store.KINDS else f"tg:{arg}"
+            return {"status": "none", "ident": ident}
+        return {"status": "one", "player_id": found.player_id, "ident": f"{found.kind}:{found.value}"}
+
+    async def _mark_action(self, p: dict[str, Any], data: dict[str, Any]) -> bool:
+        """A sanction or a mark with its author and time (FT-И.5); a repeat of the event adds nothing."""
+        assert self.services is not None
+        kind, _, value = str(p["ident"]).partition(":")
+        if not value:
+            kind, value = "tg", kind
+        event = data.get("event", {})
+        async with self.services.db.pool.acquire() as conn:
+            return await store.add_mark(conn, str(p["kind"]), kind, value, author=str(event.get("sender_id")),
+                                        text=p.get("text"), trace_id=event.get("trace_id"))
 
     def cfg(self, ctx: Context) -> PlayersConfig:
         return PlayersConfig.model_validate(ctx.config)

@@ -148,7 +148,17 @@ class App:
         for client in self._clients:
             await self.pool.add(client)
         await self._start_sessions()
-        self._tasks.append(asyncio.create_task(self._start_pipeline(), name="pipeline-start"))
+        task = asyncio.create_task(self._start_pipeline(), name="pipeline-start")
+        task.add_done_callback(self._pipeline_started)
+        self._tasks.append(task)
+
+    def _pipeline_started(self, task: asyncio.Task[Any]) -> None:
+        """A failure of the pipeline start must not be silent: intake goes on, processing does not."""
+        if task.cancelled() or task.exception() is None:
+            return
+        exc = task.exception()
+        log.critical("pipeline start failed: %r", exc, exc_info=exc)
+        self.alerts.alarm(f"Конвейер не запустился: {exc!r}. Приём в SQLite продолжается, обработка стоит.")
 
     async def _start_sessions(self) -> None:
         cfg = self.store.current.config.pool
@@ -220,7 +230,8 @@ class App:
         """Register a module before start: queue, reconcile hook, services, /trace resolver."""
         self.queues.register(module)
         self.pool.reconcilers.append(module.reconcile)
-        module.bind(Services(self.db, self._reread, self.alerts.logs, lambda: self.store.current))
+        module.bind(Services(self.db, self._reread, self.alerts.logs, lambda: self.store.current,
+                             self.output.enqueue, lambda account_id: str(self.pool.state(account_id))))
         resolver = module.trace_resolver()
         if resolver is not None:
             self.commands.resolvers.append(resolver)
