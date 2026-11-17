@@ -6,7 +6,9 @@ requires-python = ">=3.12"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-testpaths = ["tests"]
+# Tests of a module live in its folder: autocash/modules/<name>/<PREFIX>_tests/<PREFIX>_test_*.py
+testpaths = ["tests", "autocash/modules"]
+python_files = ["test_*.py", "*_test_*.py"]
 addopts = "-q"
 # No test may hang: one test gets 5 minutes at most (the thread method works on Windows too).
 # A whole run is capped from the outside: `timeout 2400 python -m pytest`.

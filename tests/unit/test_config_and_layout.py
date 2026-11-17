@@ -17,7 +17,9 @@ def test_config_example_passes_the_schema() -> None:
     runtime = build_runtime(raw)
     assert runtime.source(-1001000000001).policy == "full" and runtime.source(-1001000000001).rules
     assert runtime.source(-1009000000001).policy == "ignore"  # the system's own log group (FT-2.4)
-    assert runtime.source(-123).policy == "meta" and not runtime.source(-123).known
+    # A group without a role is "other": known to exist, not read (D-RM-2).
+    assert runtime.source(-123).policy == "presence" and not runtime.source(-123).known
+    assert runtime.source(-123).roles == frozenset({"other"})
     # The example spells out the defaults, so it must not drift away from the schema.
     explicit = Config.model_validate(raw)
     defaults = Config()

@@ -105,7 +105,10 @@ class DefaultsCfg(Strict):
     # they share this policy, the role "dm" and, optionally, a template (docs/decisions.md, D-1b-6).
     private_chat_policy: Policy = "full"
     private_template: str | None = None
-    policy_by_role: dict[str, Policy] = {"channel": "presence", "logs": "ignore", "debug": "ignore"}
+    policy_by_role: dict[str, Policy] = {"other": "presence", "channel": "presence", "logs": "ignore",
+                                         "debug": "ignore"}
+    # A group without a role of its own has this role (D-RM-2): "other" - known to exist, not read.
+    group_role: str = "other"
 
 
 class ServiceChatsCfg(Strict):
@@ -303,6 +306,10 @@ class WebCfg(Strict):
 
 class Config(Strict):
     service_chats: ServiceChatsCfg = ServiceChatsCfg()
+    # Roles of groups (module Role Manager, D-RM-1): the list of roles and group -> role.
+    # A group id is written without the minus and without the "100" of supergroups: 3845234572634.
+    group_roles: list[str] = ["other"]
+    groups: dict[int, str] = {}
     # user_id -> global roles (FT-12.1); source-bound roles live in sources[].senders
     users: dict[int, list[str]] = {}
     # FT-12.1, 12.2: the list of user roles, extended by configuration.
@@ -355,6 +362,14 @@ class Config(Strict):
                 raise ValueError(f"source {src.chat_id}: unknown template {src.template!r}")
         if self.defaults.private_template is not None and self.defaults.private_template not in self.templates:
             raise ValueError(f"defaults.private_template: unknown template {self.defaults.private_template!r}")
+        roles_of_groups = set(self.group_roles)
+        if self.defaults.group_role not in roles_of_groups:
+            raise ValueError(f"defaults.group_role: {self.defaults.group_role!r} is not in group_roles")
+        for group_id, role in self.groups.items():
+            if group_id <= 0:
+                raise ValueError(f"groups.{group_id}: a group id is written without the minus")
+            if role not in roles_of_groups:
+                raise ValueError(f"groups.{group_id}: unknown role {role!r} (see group_roles)")
         known_roles = set(self.user_roles)
         for user_id, roles in self.users.items():
             unknown_roles = set(roles) - known_roles

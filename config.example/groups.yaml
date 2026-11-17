@@ -1,0 +1,10 @@
+# Roles of groups (module Role Manager, autocash/modules/role_manager/RM_readme.md).
+# Written by the command /grole and by the web admin; a hand edit works too (then /reload).
+# A group id is written WITHOUT the minus and without the "100" of supergroups:
+# -1003845234572634 in Telegram is 3845234572634 here.
+
+# The roles a group may have. Roles are being redesigned: for now only "other".
+group_roles: [other]
+
+# group id -> role. A group that is not listed has the role defaults.group_role (other).
+groups: {}

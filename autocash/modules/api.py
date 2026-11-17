@@ -117,6 +117,9 @@ class Services:
     runtime: Callable[[], Any]  # the current configuration Runtime
     enqueue: Callable[[list[int]], None] = lambda ids: None  # hand outbound tasks written outside an event
     account_state: Callable[[int], str] = lambda account_id: "active"
+    # A change of the configuration files: (author, summary, mutation of the merged raw config) -> new version.
+    # The same path as the web admin: checked, versioned, journaled, applied without a restart.
+    edit_config: Callable[[int, str, Callable[[dict[str, Any]], None]], Awaitable[str]] | None = None
 
 
 TraceResolver = Callable[[str], Awaitable[list[str]]]
@@ -127,6 +130,8 @@ class Module(ABC):
     subscriptions: ClassVar[list[str]] = []  # message types, masks allowed: "deposit.*", "*"
     entities: ClassVar[list[EntityDecl]] = []
     commands: ClassVar[list[str]] = []
+    # Commands also accepted from groups that are not read (policy presence/meta), e.g. /rm ? (D-RM-4).
+    commands_any_chat: ClassVar[list[str]] = []
     config_model: ClassVar[type[BaseModel] | None] = None
     concurrency: ClassVar[int] = 16
     timeout_s: ClassVar[float] = 5.0

@@ -35,18 +35,9 @@ def amount(value: Any) -> Decimal | None:
         return None
 
 
-def mask(kind: str, value: str) -> str:
-    """Invariant 8: card and phone numbers are kept masked."""
-    digits = re.sub(r"\D", "", value)
-    if kind == "card" and len(digits) >= 12:
-        return f"{digits[:4]} •••• {digits[-4:]}"
-    if kind == "phone" and len(digits) >= 7:
-        return f"+{digits[:1]}•••{digits[-4:]}"
-    return "•••"
-
-
-def masked_requisites(features: list[dict[str, Any]]) -> list[dict[str, str]]:
-    return [{"kind": f["k"], "masked": mask(f["k"], str(f["v"]))} for f in features if f["k"] in ("card", "phone")]
+def requisites(features: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Card and phone numbers of the requisites, as written (no masking: decision D-RM-5)."""
+    return [{"kind": f["k"], "value": str(f["v"])} for f in features if f["k"] in ("card", "phone")]
 
 
 @dataclass(slots=True)

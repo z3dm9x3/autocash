@@ -192,7 +192,7 @@ class DepositsModule(Module):
     async def _requisites(self, conn: asyncpg.Connection, m: Msg, cfg: DepositsConfig) -> list[tuple[int, datetime]]:
         if m.event != "new":
             return []
-        data = {"requisites": store.masked_requisites(m.features)}
+        data = {"requisites": store.requisites(m.features)}
         await store.pend(conn, m, "requisites", data=data)
         if "reply" in cfg.binding and m.reply_to is not None:
             dep = await conn.fetchrow("SELECT deposit_id, chat_id, created_at FROM deposits WHERE chat_id = $1 "

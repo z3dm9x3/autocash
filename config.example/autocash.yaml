@@ -12,8 +12,10 @@ users:
   1000001: [admin]
 
 defaults:
-  unknown_chat_policy: meta          # a new chat without a role: store the fact and the time only
-  policy_by_role: {channel: presence, logs: ignore, debug: ignore}
+  # A group without a role of its own gets `group_role` (roles of groups: groups.yaml, module Role Manager).
+  group_role: other                  # other: known to exist, not read, no reactions
+  policy_by_role: {other: presence, channel: presence, logs: ignore, debug: ignore}
+  unknown_chat_policy: meta          # used only when policy_by_role has no policy for group_role
 
 sources:
   - chat_id: -1001000000001
@@ -83,13 +85,17 @@ queue:
 # `deposits` and `players` need the kassa template rules (types deposit.*, method.*): the
 # template must be written from recorded kassa messages (tests/fixtures/messages/README.md).
 modules:
+  role_manager: {}                     # the first module: roles of groups, /grole and /rm ? (RM_readme.md)
+  # DRAFTS: the logic of kassa messages is not known yet, these modules are switched off.
   deposits:
+    enabled: false
     config:
       binding: [reply, confirmation]   # OPEN-QUESTION: FT-З.9 - how requisites are tied to a request
       reconcile_after_min: 30          # OPEN-QUESTION: FT-З.10 - X
       stuck_after_h: 24                # OPEN-QUESTION: FT-З.11 - Y
       unknown_share_max: 0.05          # OPEN-QUESTION: stage 2 - acceptable share of unknown
   players:
+    enabled: false
     config:
       merge_confirm_threshold: 6       # OPEN-QUESTION: FT-И.3 - larger joins wait for a staff decision
   reactions: {}                        # rules below; the module must be listed to run them

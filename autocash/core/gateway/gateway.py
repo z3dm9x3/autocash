@@ -13,8 +13,8 @@ from collections.abc import Callable
 from typing import Any
 
 from autocash.core.buffer.sqlite_buffer import SqliteBuffer
-from autocash.core.config.loader import ConfigStore
-from autocash.core.extractor.extractor import extract
+from autocash.core.config.loader import ConfigStore, Runtime
+from autocash.core.extractor.extractor import Extraction, extract
 from autocash.core.extractor.normalize import clean_markup, text_hash
 from autocash.core.telegram.api import RawEvent
 
@@ -71,6 +71,8 @@ class Gateway:
         self._last_hash: OrderedDict[tuple[int, int, int], tuple[str, int]] = OrderedDict()
         self.accepted = 0
         self.on_command: Callable[[dict[str, Any]], None] | None = None
+        # Commands accepted from groups that are not read (policy presence/meta), e.g. /rm ? (D-RM-4).
+        self.any_chat_commands: set[str] = set()
         self.duplicates = 0
         self.rejected = 0
         self.ignored = 0
@@ -122,17 +124,20 @@ class Gateway:
             self._notify_logs(
                 f"Новый чат без роли: {ev.chat_title or ''} ({ev.chat_id}), политика приёма: {src.policy}"
             )
-        if src.policy == "presence":
+        command = self._any_chat_command(ev, src.policy, rt)
+        if src.policy == "presence" and command is None:
             return
 
         scope = 0 if exact else ev.account_id
         version = 0 if ev.kind == "new" else int((ev.edit_date or ev.date).timestamp())
         own_sender = ev.sender_id is not None and ev.sender_id in self.pool_user_ids
-        full = src.policy == "full"
+        # A command from a group that is not read is stored and processed as one message of a read group.
+        policy = "full" if command is not None else src.policy
+        full = policy == "full"
         text, hash_, features, is_command = "", "", [], False
         manifest_version = None
         if full:
-            ex = extract(ev.text, rt.manifest)
+            ex = command or extract(ev.text, rt.manifest)
             text, hash_, features = ex.text, ex.text_hash, ex.features
             manifest_version = rt.manifest.version
             key = (scope, ev.chat_id, ev.msg_id)
@@ -155,7 +160,7 @@ class Gateway:
             "kind": "message", "ukey": f"m:{ev.account_id}:{ev.chat_id}:{ev.msg_id}:{version}",
             "trace_id": trace_id, "scope_id": scope, "chat_id": ev.chat_id, "msg_id": ev.msg_id,
             "version": version, "msg_date": date_ts, "account_id": ev.account_id, "event": ev.kind,
-            "source": ev.source, "policy": src.policy, "origin": origin, "sender_id": ev.sender_id,
+            "source": ev.source, "policy": policy, "origin": origin, "sender_id": ev.sender_id,
             "sender_role": rt.sender_role(src, ev.sender_id, ev.anonymous), "can_command": not ev.anonymous,
             "source_roles": sorted(src.roles), "src_priority": src.cfg.priority,
             "edit_date": ev.edit_date.timestamp() if ev.edit_date else None, "received_at": received,
@@ -166,6 +171,14 @@ class Gateway:
             "dedup_key": dedup_key, "dedup_exact": dedup_exact,
         }
         await self._store_record(rec)
+
+    def _any_chat_command(self, ev: RawEvent, policy: str, rt: Runtime) -> Extraction | None:
+        if policy not in ("presence", "meta") or not self.any_chat_commands or ev.kind != "new" or ev.anonymous:
+            return None
+        if not (ev.text or "").lstrip().startswith("/"):
+            return None
+        ex = extract(ev.text, rt.manifest)
+        return ex if ex.command is not None and ex.command["name"] in self.any_chat_commands else None
 
     async def _store_record(self, rec: dict[str, Any]) -> None:
         result = await self._buffer.append(rec)

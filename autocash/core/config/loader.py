@@ -33,6 +33,18 @@ class SourceRuntime:
     known: bool = True
 
 
+# Marked ids of supergroups and channels are -100<id> (Telethon): -1003845234572634 -> 3845234572634.
+_MARK_LEN = 13  # "100" + at least 10 digits; ids of basic groups are shorter
+
+
+def bare_group_id(chat_id: int) -> int:
+    """A group id as it is written in `groups`: without the minus and without the "100" of supergroups."""
+    digits = str(abs(chat_id))
+    if digits.startswith("100") and len(digits) >= _MARK_LEN:
+        return int(digits[3:])
+    return int(digits)
+
+
 @dataclass(slots=True)
 class Runtime:
     """An immutable, fully validated snapshot of the configuration."""
@@ -43,20 +55,44 @@ class Runtime:
     sources: dict[int, SourceRuntime]
     unknown_policy: Policy
     private_rules: list[CompiledRule] = field(default_factory=list)
+    _groups: dict[int, SourceRuntime] = field(default_factory=dict)
+
+    def group_role(self, chat_id: int) -> str | None:
+        """The role given to a group (D-RM-1), None when it has none of its own."""
+        return self.config.groups.get(bare_group_id(chat_id)) if chat_id < 0 else None
 
     def source(self, chat_id: int) -> SourceRuntime:
+        if chat_id < 0:
+            cached = self._groups.get(chat_id)
+            if cached is None:
+                cached = self._groups[chat_id] = self._group_source(chat_id)
+            return cached
         src = self.sources.get(chat_id)
         if src is not None:
             return src
-        if chat_id > 0:
-            # A private dialog: one shared policy for all of them, no "new chat" notification.
-            return SourceRuntime(SourceCfg(chat_id=chat_id, roles=["dm"]),
-                                 self.config.defaults.private_chat_policy, frozenset({"dm"}), self.private_rules)
+        return SourceRuntime(SourceCfg(chat_id=chat_id, roles=["dm"]),
+                             self.config.defaults.private_chat_policy, frozenset({"dm"}), self.private_rules)
+
+    def _group_source(self, chat_id: int) -> SourceRuntime:
+        defaults = self.config.defaults
         service = self.config.service_chats
+        src = self.sources.get(chat_id)
         if chat_id in (service.logs, service.debug):
-            # The system's own log groups are never processed (FT-2.4).
-            return SourceRuntime(SourceCfg(chat_id=chat_id), "ignore", frozenset(), [])
-        return SourceRuntime(SourceCfg(chat_id=chat_id), self.unknown_policy, frozenset(), [], known=False)
+            # The system's own log groups are never processed (FT-2.4), whatever role they are given.
+            return src or SourceRuntime(SourceCfg(chat_id=chat_id), "ignore", frozenset(), [])
+        role = self.group_role(chat_id)
+        if src is not None:
+            if role is None:
+                return src
+            # The role given by Role Manager wins over the roles written in `sources`.
+            return SourceRuntime(src.cfg, defaults.policy_by_role.get(role, "full"), frozenset({role}), src.rules)
+        if role is not None:
+            return SourceRuntime(SourceCfg(chat_id=chat_id, roles=[role]), defaults.policy_by_role.get(role, "full"),
+                                 frozenset({role}), [])
+        # A group without a role: the default role, "other" - known to exist, not read (D-RM-2).
+        role = defaults.group_role
+        return SourceRuntime(SourceCfg(chat_id=chat_id), defaults.policy_by_role.get(role, self.unknown_policy),
+                             frozenset({role}), [], known=False)
 
     def sender_role(self, src: SourceRuntime, sender_id: int | None, anonymous: bool) -> str:
         if anonymous or sender_id is None:

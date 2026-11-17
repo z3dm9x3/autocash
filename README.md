@@ -28,7 +28,8 @@ python -m venv .venv
 1. Скопируйте `session.key` и каталог `sessions/` из «AutoCash Secrets» в каталог вне репозитория
    (на сервере — `/etc/autocash/session.key` с правами `600` и `/var/lib/autocash/sessions`, см. `docs/ops.md`).
 2. Конфигурация: `cp -r config.example config` и поправьте `config/autocash.yaml`:
-   `pool.sessions_dir` — путь к каталогу сессий, `sources`, `users`, при необходимости `web.enabled: true`.
+   `pool.sessions_dir` — путь к каталогу сессий, `users`, при необходимости `web.enabled: true`.
+   Роли групп — `config/groups.yaml` (или командой `/grole`).
 3. База: `createdb autocash` (схема создаётся миграциями при старте).
 4. Переменные окружения (не в git):
    ```bash
@@ -40,6 +41,15 @@ python -m venv .venv
 6. Админка (по желанию): `python -m autocash.cli.webuser set <Telegram ID>`, затем http://127.0.0.1:8088.
 
 Новый аккаунт без прототипа: `python -m autocash.cli.login --sessions <каталог сессий> --name <имя>`.
+
+## Модули
+
+Каждый модуль — папка `autocash/modules/<имя>/` с префиксом в именах файлов и своим `<ПРЕФИКС>_readme.md` (AGENTS.md, правило 10).
+
+| Модуль | Префикс | Что делает |
+|---|---|---|
+| `role_manager` | `RM` | роли групп: `/grole`, `/rm ?`; группа без роли — `other` (не читается) |
+| `deposits`, `players` | — | черновики по предположениям о формате касс, выключены |
 
 ## Проверка
 

@@ -114,7 +114,7 @@ async def test_request_goes_through_every_stage(app_factory: AppFactory, fake: F
     assert (d["stage"], d["status"]) == ("final", "success")
     assert d["tgid"] == TG and d["mel_id"] == MEL and d["method"] == "Top Pay" and str(d["amount"]) == "1000.00"
     assert str(d["bonus"]) == "50" and str(d["total"]) == "1050.00" and d["cashier_id"] == CASHER
-    assert d["requisites"] == '[{"kind": "card", "masked": "2200 •••• 9012"}]'  # masked (invariant 8)
+    assert d["requisites"] == '[{"kind": "card", "value": "2200 1234 5678 9012"}]'  # as written (D-RM-5)
     assert d["created_at"] <= d["requisites_at"] <= d["sent_at"] <= d["receipt_at"] <= d["final_at"]
     assert d["marks"] == "[]"  # 1000 + 50 bonus = 1050, as in the receipt
     # Every stage is recorded once (their order in time is checked on the columns above: messages
@@ -162,8 +162,8 @@ async def test_two_requisites_in_a_row_are_tied_by_the_bot_confirmation(
     await app.idle()
     d = await dep(app, "200")
     assert d["stage"] == "sent"
-    assert d["requisites"] == ('[{"kind": "card", "masked": "2202 •••• 2222"}, '
-                               '{"kind": "phone", "masked": "+7•••2233"}]')
+    assert d["requisites"] == ('[{"kind": "card", "value": "2202 0000 1111 2222"}, '
+                               '{"kind": "phone", "value": "+79001112233"}]')
 
 
 async def test_confirmation_before_the_request_is_applied_when_the_request_comes(

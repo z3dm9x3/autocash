@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -243,11 +244,17 @@ class App:
         self.queues.register(module)
         self.pool.reconcilers.append(module.reconcile)
         module.bind(Services(self.db, self._reread, self.alerts.logs, lambda: self.store.current,
-                             self.output.enqueue, lambda account_id: str(self.pool.state(account_id))))
+                             self.output.enqueue, lambda account_id: str(self.pool.state(account_id)),
+                             self._edit_config))
+        self.gateway.any_chat_commands.update(module.commands_any_chat)
         resolver = module.trace_resolver()
         if resolver is not None:
             self.commands.resolvers.append(resolver)
         self.modules.append(module)
+
+    async def _edit_config(self, author: int, summary: str, mutate: Callable[[dict[str, Any]], None]) -> str:
+        result = await self.web.editor.apply(author, summary, mutate)
+        return result.version_after
 
     async def _reread(self, chat_id: int, msg_ids: list[int]) -> bool:
         return await self.pool.reread(chat_id, msg_ids, self.scheduler.account_for("read", chat_id))
