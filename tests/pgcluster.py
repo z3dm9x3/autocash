@@ -104,7 +104,19 @@ class PgCluster:
                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                               timeout=60).returncode
 
+    # Empty directories of a cluster: a cleaner of %TEMP% (Windows Storage Sense after a reboot)
+    # deletes them, and the server then refuses to start ("could not open directory pg_notify").
+    _EMPTY_DIRS = ("pg_notify", "pg_tblspc", "pg_twophase", "pg_snapshots", "pg_replslot", "pg_serial",
+                   "pg_commit_ts", "pg_dynshmem", "pg_stat_tmp", "pg_logical/snapshots", "pg_logical/mappings",
+                   "pg_wal/archive_status")
+
+    def _intact(self) -> bool:
+        return all((self.data / d).is_dir() for d in self._EMPTY_DIRS)
+
     def init(self) -> None:
+        if (self.data / "PG_VERSION").exists() and not self._intact():
+            # A test cluster holds nothing worth keeping: make a fresh one instead of guessing.
+            shutil.rmtree(self.data, ignore_errors=True)
         if (self.data / "PG_VERSION").exists():
             if self._status() == 0:
                 # A previous run was killed with the server still up: stop it, it may be on another port.
