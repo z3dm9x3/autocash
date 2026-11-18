@@ -73,7 +73,7 @@ sudo systemctl enable --now autocash
 
 Отдельный сервер Autocash, не общий с другими проектами (D-RM-9): порт 5434, данные `Documents\AutoCash Data\pg`, DSN в `Documents\AutoCash Secrets\pg.env`.
 `.\deploy\windowsutocash-pg.ps1 start | stop | status`. Перед запуском скрипт проверяет, что на диске больше 500 МБ.
-Сам сервис: `deploy/windows/autocash-run.ps1 start | stop | status | log`, журнал — `Documents\AutoCash Data\logsutocash.log`.
+Сам сервис: `deploy/windows/autocash-run.ps1 start | stop | status | log`, журнал — `Documents/AutoCash Data/logs/autocash.log`.
 
 ## Обратная связь от команд (AGENTS.md, правило 9)
 

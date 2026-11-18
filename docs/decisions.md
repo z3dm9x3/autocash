@@ -325,7 +325,7 @@ Telegram публикует лимиты только для ботов (Bots FA
 Протоколы вызывают только модули, включённые в конфигурации (`modules.<имя>.enabled`). Так работает тихий запуск: Autosup выключен — пользователи и протоколы записываются, в Telegram ничего не уходит. Запуски протоколов, прошедшие при выключенном модуле, закрыты без него и позже не повторяются.
 
 ### D-RM-16. Первый запуск
-Аккаунт Dmitry (8201927395, не аккаунт Cash Monitor Dev), группа `logs` — `-5218924098` (обычная группа), Autosup выключен. Сервис на машине разработки: `deploy/windows/autocash-run.ps1 start|stop|status|log`, журнал — `Documents\AutoCash Data\logsutocash.log`, рабочая конфигурация — `config/` (вне git).
+Аккаунт Dmitry (8201927395, не аккаунт Cash Monitor Dev), группа `logs` — `-5218924098` (обычная группа), Autosup выключен. Сервис на машине разработки: `deploy/windows/autocash-run.ps1 start|stop|status|log`, журнал — `Documents/AutoCash Data/logs/autocash.log`, рабочая конфигурация — `config/` (вне git).
 
 ## Замечания к ТЗ, требующие ответа заказчика
 
