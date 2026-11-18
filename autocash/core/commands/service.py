@@ -23,7 +23,7 @@ import asyncpg
 
 from autocash.actions.send import OutboundDraft, insert_outbound
 from autocash.core.commands import render
-from autocash.core.commands.rights import can_run
+from autocash.core.commands.rights import can_run, deny
 from autocash.core.trace.codes import Reason, Status
 from autocash.core.trace.monitor import STAGE_TITLES
 from autocash.modules.api import Context, Event, Module
@@ -70,7 +70,7 @@ class SystemCommands(Module):
         args = [str(a) for a in rec.fields.get("args") or []]
         rt = self.app.store.current
         if not can_run(rt, rec.sender_id, rec.chat_id, name):
-            ctx.reply(f"Недостаточно прав для /{name}.", rule=f"command.{name}", kind="command_reply")
+            deny(self.app.alerts.logs, rt, rec.sender_id, rec.chat_id, name)  # the chat gets nothing (D-RM-8)
             ctx.finish(Status.CANCELLED, Reason.ACCESS_DENIED)
             return
         if self._emergency_answered.pop((rec.chat_id, rec.msg_id), None) is not None:

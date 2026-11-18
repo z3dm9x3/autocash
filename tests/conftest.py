@@ -111,6 +111,8 @@ async def pg_dsn(pg_cluster: PgCluster) -> AsyncIterator[str]:
 
 
 def write_config(path: Path, config: dict[str, Any]) -> Path:
+    # "users" of a test is not configuration: the app factory puts it into the directory (D-RM-10).
+    config = {k: v for k, v in config.items() if k != "users"}
     path.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return path
 
@@ -144,13 +146,18 @@ async def app_factory(
     def factory(*, modules: list[Module] | None = None, cfg: dict[str, Any] | None = None,
                 accounts: tuple[int, ...] = (ACCOUNT,), server: FakeTelegram | None = None,
                 **kwargs: Any) -> App:
-        path = write_config(tmp_path / "config.yaml", cfg or config)
+        raw = dict(cfg or config)
+        # Roles of users are not configuration (PostgreSQL, Role Manager): tests give them as
+        # "users": {tg_id: [role]} and the factory puts them into the in-memory directory.
+        users = {int(k): v[0] for k, v in (raw.pop("users", None) or {}).items() if v}
+        path = write_config(tmp_path / "config.yaml", raw)
         tg = server or fake
         app = App(
             config_path=path, sqlite_path=tmp_path / "buffer.sqlite", pg_dsn=pg_dsn,
             clients=[tg.client(a) for a in accounts], modules=modules if modules is not None else [DemoModule()],
             **kwargs,
         )
+        app.store.directory.seed_users(users)
         apps.append(app)
         return app
 

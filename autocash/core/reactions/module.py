@@ -19,7 +19,7 @@ from typing import Any, ClassVar
 import asyncpg
 
 from autocash.actions.send import KIND_PRIORITY, OutboundDraft, insert_outbound
-from autocash.core.commands.rights import can_run
+from autocash.core.commands.rights import can_run, deny
 from autocash.core.config.schema import CommandArgCfg, ReactionRuleCfg
 from autocash.core.reactions.engine import Draft, Effects, Runner, log_row
 from autocash.core.record import MessageRecord
@@ -92,6 +92,10 @@ class ReactionsModule(Module):
         assert self.services is not None
         return self.services.runtime()
 
+    def _notify(self, text: str) -> None:
+        assert self.services is not None
+        self.services.notify(text)
+
     def _runner(self, rule: ReactionRuleCfg, data: dict[str, Any], *, external: bool) -> Runner:
         assert self.services is not None
         svc = self.services.runtime().config.service_chats
@@ -134,7 +138,7 @@ class ReactionsModule(Module):
         if command is not None:
             rules = [r for r in rules if r.when.command == command]
             if rules and not can_run(rt, rec.sender_id, rec.chat_id, command):
-                ctx.reply(f"Недостаточно прав для {command}.", rule=f"command.{command}", kind="command_reply")
+                deny(self._notify, rt, rec.sender_id, rec.chat_id, command)  # the chat gets nothing (D-RM-8)
                 ctx.finish(Status.CANCELLED, Reason.ACCESS_DENIED)
                 return
         else:
@@ -286,7 +290,7 @@ class ReactionsModule(Module):
     # ---- dry-run over history (FT-8.6) ---------------------------------------------------------------------
     async def _dryrun_command(self, rec: MessageRecord, ctx: Context) -> None:
         if not can_run(self._rt(), rec.sender_id, rec.chat_id, "dryrun"):
-            ctx.reply("Недостаточно прав для dryrun.", rule="command.dryrun", kind="command_reply")
+            deny(self._notify, self._rt(), rec.sender_id, rec.chat_id, "dryrun")
             ctx.finish(Status.CANCELLED, Reason.ACCESS_DENIED)
             return
         args = [str(a) for a in rec.fields.get("args") or []]

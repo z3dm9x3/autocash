@@ -105,10 +105,9 @@ class DefaultsCfg(Strict):
     # they share this policy, the role "dm" and, optionally, a template (docs/decisions.md, D-1b-6).
     private_chat_policy: Policy = "full"
     private_template: str | None = None
-    policy_by_role: dict[str, Policy] = {"other": "presence", "channel": "presence", "logs": "ignore",
-                                         "debug": "ignore"}
-    # A group without a role of its own has this role (D-RM-2): "other" - known to exist, not read.
-    group_role: str = "other"
+    # Policies of the roles written in `sources` (legacy). Roles of groups given by Role Manager carry
+    # their policy in rm_roles (D-RM-7); a group without any role is "other": known, not read.
+    policy_by_role: dict[str, Policy] = {"channel": "presence", "logs": "ignore", "debug": "ignore"}
 
 
 class ServiceChatsCfg(Strict):
@@ -239,9 +238,6 @@ class ReportsCfg(Strict):
     pool_size: int = 2
 
 
-DEFAULT_USER_ROLES = ["player", "casher", "manager", "admin", "support", "dev"]
-
-
 class CommandArgCfg(Strict):
     name: str
     # int: digits; ident: TGID / MelID, "tg:" or "mel:" prefix allowed (FT-12.5); word: one word;
@@ -306,21 +302,7 @@ class WebCfg(Strict):
 
 class Config(Strict):
     service_chats: ServiceChatsCfg = ServiceChatsCfg()
-    # Roles of groups (module Role Manager, D-RM-1): the list of roles and group -> role.
-    # A group id is written without the minus and without the "100" of supergroups: 3845234572634.
-    group_roles: list[str] = ["other"]
-    groups: dict[int, str] = {}
-    # user_id -> global roles (FT-12.1); source-bound roles live in sources[].senders
-    users: dict[int, list[str]] = {}
-    # FT-12.1, 12.2: the list of user roles, extended by configuration.
-    user_roles: list[str] = DEFAULT_USER_ROLES
-    # OPEN-QUESTION: FT-12.4 — user role -> source role ("*" = any) -> commands ("*" = all).
-    permissions: dict[str, dict[str, list[str]]] = {
-        "admin": {"*": ["*"]},
-        "dev": {"*": ["*"]},
-        "manager": {"*": ["status", "accounts", "coverage", "queue", "trace", "stuck", "metrics"]},
-        "support": {"*": ["status", "trace"]},
-    }
+    # Users, groups, roles and rights are NOT here: PostgreSQL, module Role Manager (D-RM-7, D-RM-10).
     commands: OperatorCommandsCfg = OperatorCommandsCfg()
     trace: TraceCfg = TraceCfg()
     reports: ReportsCfg = ReportsCfg()
@@ -362,22 +344,6 @@ class Config(Strict):
                 raise ValueError(f"source {src.chat_id}: unknown template {src.template!r}")
         if self.defaults.private_template is not None and self.defaults.private_template not in self.templates:
             raise ValueError(f"defaults.private_template: unknown template {self.defaults.private_template!r}")
-        roles_of_groups = set(self.group_roles)
-        if self.defaults.group_role not in roles_of_groups:
-            raise ValueError(f"defaults.group_role: {self.defaults.group_role!r} is not in group_roles")
-        for group_id, role in self.groups.items():
-            if group_id <= 0:
-                raise ValueError(f"groups.{group_id}: a group id is written without the minus")
-            if role not in roles_of_groups:
-                raise ValueError(f"groups.{group_id}: unknown role {role!r} (see group_roles)")
-        known_roles = set(self.user_roles)
-        for user_id, roles in self.users.items():
-            unknown_roles = set(roles) - known_roles
-            if unknown_roles:
-                raise ValueError(f"users.{user_id}: unknown roles {sorted(unknown_roles)} (see user_roles)")
-        unknown_roles = set(self.permissions) - known_roles
-        if unknown_roles:
-            raise ValueError(f"permissions: unknown user roles {sorted(unknown_roles)} (see user_roles)")
         rule_ids = [r.id for r in self.reactions.rules]
         if len(rule_ids) != len(set(rule_ids)):
             raise ValueError("reactions: duplicate rule ids")

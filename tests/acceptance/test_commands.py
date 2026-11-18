@@ -47,8 +47,7 @@ async def test_command_without_rights_is_refused_with_access_denied(
     app_factory: AppFactory, fake: FakeTelegram, cfg: dict[str, Any]
 ) -> None:
     app = await started(app_factory(cfg=cfg))
-    reply = await ask(app, fake, "/status", user=PLAYER)
-    assert "Недостаточно прав" in reply
+    fake.post(KASSA, PLAYER, "/status")
     await app.idle()
     row = await app.db.pool.fetchrow(
         "SELECT t.status, t.reason_code, m.sender_id, m.fields FROM trace_inbound t "
@@ -56,14 +55,16 @@ async def test_command_without_rights_is_refused_with_access_denied(
     assert (row["status"], row["reason_code"], row["sender_id"]) == ("cancelled", "ACCESS_DENIED", PLAYER)
     mod = await app.db.pool.fetchrow("SELECT status, reason_code FROM trace_module WHERE module = 'system'")
     assert (mod["status"], mod["reason_code"]) == ("cancelled", "ACCESS_DENIED")
-    # The refusal itself is an outbound task of that command, visible in its trace.
-    out = await app.db.pool.fetchrow("SELECT o.status FROM outbound_tasks o JOIN messages m "
-                                     "ON m.trace_id = o.parent_trace_id WHERE m.text = '/status'")
-    assert out["status"] == "delivered"
+    # D-RM-8: the chat gets nothing; the refusal goes to the group logs.
+    assert sent_by(fake, KASSA) == []
+    await wait_for(lambda: any(f"Отказ в правах: пользователь {PLAYER}" in t for _, t in sent_by(fake, LOGS)),
+                   what="the refusal in logs")
 
-    # A casher bound to this kassa has no right to /status by the default matrix either, and an
-    # admin has every right.
-    assert "Недостаточно прав" in await ask(app, fake, "/status", user=CASHER)
+    # A casher bound to this kassa has no rights either (rights belong to the user's role only);
+    # an admin has every right.
+    fake.post(KASSA, CASHER, "/status")
+    await app.idle()
+    assert sent_by(fake, KASSA) == []
     assert "Autocash: работает" in await ask(app, fake, "/status")
 
 
@@ -197,10 +198,12 @@ async def test_status_and_accounts_answer_while_postgres_is_stopped(
         await asyncio.to_thread(pg_cluster.start)
     await app.idle(timeout=60)
     # Once PostgreSQL is back the commands are traced, but not answered a second time;
-    # the command without rights gets its refusal through the regular path.
+    # the refusal of the command without rights goes to the group logs, not to the chat (D-RM-8).
     got = replies(fake, KASSA, before)
     assert sum(t.startswith("Autocash") for t in got) == 1 and sum(t.startswith("Аккаунты") for t in got) == 1
-    assert sum("Недостаточно прав" in t for t in got) == 1
+    assert len(got) == 2
+    await wait_for(lambda: any(f"Отказ в правах: пользователь {PLAYER}" in t for _, t in sent_by(fake, LOGS)),
+                   what="the refusal in logs")
     rows = await app.db.pool.fetch("SELECT t.status FROM trace_inbound t JOIN messages m USING (trace_id) "
                                    "WHERE m.sender_id = $1", ADMIN)
     assert [r["status"] for r in rows] == ["processed", "processed"]

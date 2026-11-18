@@ -117,9 +117,10 @@ class Services:
     runtime: Callable[[], Any]  # the current configuration Runtime
     enqueue: Callable[[list[int]], None] = lambda ids: None  # hand outbound tasks written outside an event
     account_state: Callable[[int], str] = lambda account_id: "active"
-    # A change of the configuration files: (author, summary, mutation of the merged raw config) -> new version.
-    # The same path as the web admin: checked, versioned, journaled, applied without a restart.
-    edit_config: Callable[[int, str, Callable[[dict[str, Any]], None]], Awaitable[str]] | None = None
+    # (account, private chat, message id) -> had the dialog messages before this one? None: unknown.
+    # One light getHistory through the limiter of that account (D-RM-11).
+    dialog_history: Callable[[int, int, int], Awaitable[bool | None]] | None = None
+    wake_protocols: Callable[[], None] = lambda: None  # after autocash.core.protocols.emit (D-RM-12)
 
 
 TraceResolver = Callable[[str], Awaitable[list[str]]]
@@ -132,6 +133,10 @@ class Module(ABC):
     commands: ClassVar[list[str]] = []
     # Commands also accepted from groups that are not read (policy presence/meta), e.g. /rm ? (D-RM-4).
     commands_any_chat: ClassVar[list[str]] = []
+    # Every message of private dialogs, whatever its type (also untyped): Role Manager (D-RM-11).
+    private_dialogs: ClassVar[bool] = False
+    # Protocols this module takes part in (D-RM-12); it gets them in `on_protocol`.
+    protocols: ClassVar[list[str]] = []
     config_model: ClassVar[type[BaseModel] | None] = None
     concurrency: ClassVar[int] = 16
     timeout_s: ClassVar[float] = 5.0
@@ -141,6 +146,12 @@ class Module(ABC):
 
     def bind(self, services: Services) -> None:
         self.services = services
+
+    async def on_protocol(self, protocol: str, subject: int, data: dict[str, Any]) -> None:  # noqa: B027
+        """A protocol run (D-RM-12); must be idempotent: it may come again after a crash."""
+
+    async def start(self) -> None:  # noqa: B027 - optional hook, a no-op unless the module needs it
+        """Called once at start, after migrations and before any event reaches the module."""
 
     async def periodic(self) -> None:  # noqa: B027 - optional hook, a no-op unless the module needs it
         """Periodic work of the module (sweeps, reconciliation); runs outside event handling."""

@@ -7,15 +7,13 @@ service_chats:
   logs: -1009000000001    # errors, warnings, new chats without a role
   debug: -1009000000002   # periodic summary of `unknown` messages
 
-# user_id -> global roles (FT-12.1). Source-bound roles are set in sources[].senders.
-users:
-  1000001: [admin]
+# Users, groups, roles and rights live in PostgreSQL (module Role Manager, tables rm_*), not here.
+# The first Dev is written into rm_users once: python -m autocash.modules.role_manager.RM_cli user <TGID> dev
 
 defaults:
-  # A group without a role of its own gets `group_role` (roles of groups: groups.yaml, module Role Manager).
-  group_role: other                  # other: known to exist, not read, no reactions
-  policy_by_role: {other: presence, channel: presence, logs: ignore, debug: ignore}
-  unknown_chat_policy: meta          # used only when policy_by_role has no policy for group_role
+  # Roles of groups and their policies: module Role Manager (tables rm_*). A group without a role
+  # is "other": known to exist, not read. The policies below are for roles written in `sources`.
+  policy_by_role: {channel: presence, logs: ignore, debug: ignore}
 
 sources:
   - chat_id: -1001000000001
@@ -85,7 +83,7 @@ queue:
 # `deposits` and `players` need the kassa template rules (types deposit.*, method.*): the
 # template must be written from recorded kassa messages (tests/fixtures/messages/README.md).
 modules:
-  role_manager: {}                     # the first module: roles of groups, /grole and /rm ? (RM_readme.md)
+  role_manager: {}                     # the first module: users, groups, roles, rights (RM_readme.md)
   # DRAFTS: the logic of kassa messages is not known yet, these modules are switched off.
   deposits:
     enabled: false
@@ -188,15 +186,8 @@ trace:
   rollup_interval_s: 60              # hourly stage metrics are recomputed this often
   purge_interval_s: 3600             # detailed traces older than retention.trace_days are removed
 
-# FT-12.1, 12.2: user roles; extend the list to add a role
-user_roles: [player, casher, manager, admin, support, dev]
-
-# OPEN-QUESTION: FT-12.4 - user role -> source role ("*" = any) -> commands ("*" = all)
-permissions:
-  admin: {"*": ["*"]}
-  dev: {"*": ["*"]}
-  manager: {"*": [status, accounts, coverage, queue, trace, stuck, metrics]}
-  support: {"*": [status, trace]}
+# Rights to commands: module Role Manager (table rm_permissions). For now only Admin runs commands;
+# Dev runs every command always. A command without rights is not answered: the refusal goes to `logs`.
 
 commands:
   heavy: [metrics]                   # FT-12.6: confirmed at once, the result comes when ready

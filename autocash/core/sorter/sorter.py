@@ -62,7 +62,7 @@ class Sorter:
         db: Database,
         writer: BatchWriter,
         dispatch: Callable[[MessageRecord], None],
-        subscribers: Callable[[str], int],
+        subscribers: Callable[[str, int], int],
         notify_debug: Callable[[str], None],
     ) -> None:
         self._store = store
@@ -158,7 +158,7 @@ class Sorter:
                 "order_key": res.order_key, "priority": res.priority, "lane": res.lane, "rule_id": res.rule_id,
                 "ttl_days": res.text_ttl_days if res.text_ttl_days is not None else default_ttl,
             })
-            subs = self._subscribers(res.msg_type)
+            subs = self._subscribers(res.msg_type, rec.chat_id)
             if res.msg_type == UNKNOWN:
                 unknown[rec.chat_id] += 1
                 status, reason = Status.SKIPPED, Reason.UNKNOWN_TYPE

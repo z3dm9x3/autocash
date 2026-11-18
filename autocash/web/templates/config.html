@@ -47,17 +47,7 @@
 </table></fieldset>
 
 <fieldset><legend>Пользователи и роли</legend>
-<p class="muted">Роли: {{ cfg.user_roles|join(', ') }}</p>
-<table><tr><th>Telegram ID</th><th>Роли</th><th></th></tr>
-{% for uid, roles in cfg.users.items() %}{% set fid = 'usr' ~ loop.index %}<tr>
-<td>{{ uid }}<form id="{{ fid }}" method="post" action="/config/user"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="base_version" value="{{ version }}"><input type="hidden" name="tg_id" value="{{ uid }}"></form></td>
-<td><input form="{{ fid }}" name="roles" value="{{ roles|join(' ') }}"></td>
-<td><button form="{{ fid }}" {{ '' if 'web_edit' in rights else 'disabled' }}>Сохранить</button>
-<form class="inline" method="post" action="/config/user/delete"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="base_version" value="{{ version }}">
-<input type="hidden" name="tg_id" value="{{ uid }}"><button {{ '' if 'web_edit' in rights else 'disabled' }}>Удалить</button></form></td></tr>{% endfor %}
-<tr><td><form id="usrnew" method="post" action="/config/user"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="base_version" value="{{ version }}"></form>
-<input form="usrnew" name="tg_id" required size="14"></td><td><input form="usrnew" name="roles" placeholder="manager"></td><td><button form="usrnew" {{ '' if 'web_edit' in rights else 'disabled' }}>Добавить</button></td></tr>
-</table></fieldset>
+<p class="muted">Пользователи, группы, роли и права — в PostgreSQL (модуль Role Manager): /urole, /grole, /rm set.</p></fieldset>
 
 <fieldset><legend>Разделы целиком (YAML): манифест и словари, шаблоны, права, приоритеты, TTL, сроки хранения, нормативы</legend>
 {% for s in sections %}<a href="/config/section?key={{ s }}">{{ s }}</a>{{ ' · ' if not loop.last }}{% endfor %}

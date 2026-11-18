@@ -28,9 +28,10 @@ python -m venv .venv
 1. Скопируйте `session.key` и каталог `sessions/` из «AutoCash Secrets» в каталог вне репозитория
    (на сервере — `/etc/autocash/session.key` с правами `600` и `/var/lib/autocash/sessions`, см. `docs/ops.md`).
 2. Конфигурация: `cp -r config.example config` и поправьте `config/autocash.yaml`:
-   `pool.sessions_dir` — путь к каталогу сессий, `users`, при необходимости `web.enabled: true`.
-   Роли групп — `config/groups.yaml` (или командой `/grole`).
-3. База: `createdb autocash` (схема создаётся миграциями при старте).
+   `pool.sessions_dir` — путь к каталогу сессий, при необходимости `web.enabled: true`.
+   Пользователи, группы и роли — в PostgreSQL (модуль RM): первого Dev занесите `python -m autocash.modules.role_manager.RM_cli user <TGID> dev`, дальше — `/urole`.
+3. База — отдельная, не общая с другими проектами: `createdb autocash` (схема создаётся миграциями при старте).
+   На Windows-машине разработки — свой сервер на порту 5434: `deploy/windows/autocash-pg.ps1 start` (docs/ops.md).
 4. Переменные окружения (не в git):
    ```bash
    export AUTOCASH_PG_DSN='postgresql://<user>:<password>@127.0.0.1:5432/autocash'
@@ -48,7 +49,7 @@ python -m venv .venv
 
 | Модуль | Префикс | Что делает |
 |---|---|---|
-| `role_manager` | `RM` | роли групп: `/grole`, `/rm ?`; группа без роли — `other` (не читается) |
+| `role_manager` | `RM` | пользователи, группы, роли и права в PostgreSQL: `/urole`, `/grole`, `/rm set`, `/rm ?` |
 | `deposits`, `players` | — | черновики по предположениям о формате касс, выключены |
 
 ## Проверка

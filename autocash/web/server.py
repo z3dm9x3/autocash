@@ -80,8 +80,6 @@ class WebAdmin:
         r.add_post("/config/toggle", self.config_toggle)
         r.add_post("/config/source", self.config_source)
         r.add_post("/config/source/delete", self.config_source_delete)
-        r.add_post("/config/user", self.config_user)
-        r.add_post("/config/user/delete", self.config_user_delete)
         r.add_get("/config/section", self.section_page)
         r.add_post("/config/section", self.section_save)
         r.add_get("/dryrun", self.dryrun_page)
@@ -445,33 +443,6 @@ class WebAdmin:
             raw["sources"] = [s for s in raw.get("sources", []) if int(s.get("chat_id", 0)) != chat_id]
 
         return await self._edit(request, f"источник {chat_id} удалён", mutate)
-
-    async def config_user(self, request: web.Request) -> web.StreamResponse:
-        form = await request.post()
-        raw_id = str(form.get("tg_id", "")).strip()
-        if not _num(raw_id):
-            raise self.back("/config", err="ID пользователя должен быть числом")
-        user_id = int(raw_id)
-        roles = _words(str(form.get("roles", "")))
-
-        def mutate(raw: dict[str, Any]) -> None:
-            users = raw.setdefault("users", {})
-            for key in [k for k in users if int(k) == user_id]:
-                del users[key]
-            users[user_id] = roles
-
-        return await self._edit(request, f"пользователь {user_id}: роли {', '.join(roles) or '—'}", mutate)
-
-    async def config_user_delete(self, request: web.Request) -> web.StreamResponse:
-        form = await request.post()
-        user_id = int(str(form.get("tg_id", "0")))
-
-        def mutate(raw: dict[str, Any]) -> None:
-            users = raw.get("users", {})
-            for key in [k for k in users if int(k) == user_id]:
-                del users[key]
-
-        return await self._edit(request, f"пользователь {user_id} удалён", mutate)
 
     async def section_page(self, request: web.Request) -> web.Response:
         key = request.query.get("key", "")

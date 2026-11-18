@@ -21,7 +21,7 @@ from autocash.core.record import MessageRecord
 from autocash.modules.api import Context, Event
 from autocash.modules.deposits.module import DepositsModule
 from autocash.modules.players.module import PlayersModule
-from tests.conftest import BOT, CASHER, KASSA, KASSA2, LOGS, AppFactory
+from tests.conftest import BOT, CASHER, KASSA, KASSA2, LOGS, AppFactory, write_config
 from tests.fake_telegram.server import FakeTelegram
 from tests.helpers import sent_by, started, wait_for
 
@@ -338,7 +338,7 @@ async def test_reconciliation_rereads_a_missed_final_and_stuck_requests_are_repo
 
     cfg2 = copy.deepcopy(cfg)
     cfg2["modules"]["deposits"]["config"]["stuck_after_h"] = 0
-    app.store.path.write_text(__import__("yaml").safe_dump(cfg2, allow_unicode=True), encoding="utf-8")
+    write_config(app.store.path, cfg2)
     assert app.reload_config()[0]
     await module.periodic()
     assert (await dep(app, "901"))["stuck"] is True

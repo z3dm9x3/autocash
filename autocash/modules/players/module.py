@@ -9,7 +9,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel
 
 from autocash.actions.entities import report
-from autocash.core.commands.rights import can_run
+from autocash.core.commands.rights import can_run, deny
 from autocash.core.reactions.engine import register_action
 from autocash.core.trace.codes import Reason, Status
 from autocash.modules.api import Context, EntityDecl, Event, Module, Services
@@ -97,7 +97,7 @@ class PlayersModule(Module):
             return
         assert self.services is not None
         if not can_run(self.services.runtime(), rec.sender_id, rec.chat_id, name):
-            ctx.reply(f"Недостаточно прав для /{name}.", rule=f"command.{name}", kind="command_reply")
+            deny(self.services.notify, self.services.runtime(), rec.sender_id, rec.chat_id, name)
             ctx.finish(Status.CANCELLED, Reason.ACCESS_DENIED)
             return
         args = [str(a) for a in rec.fields.get("args") or []]

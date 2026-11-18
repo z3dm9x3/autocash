@@ -182,9 +182,14 @@ async def test_scam_unban_rights_marks_and_clarification(
     await app.db.pool.execute("INSERT INTO player_idents (kind, value, player_id) VALUES "
                               "('tg', '555', 1), ('mel', 'A', 1), ('mel', '555', 2), ('tg', '42', 2)")
 
-    # Criterion 6: without rights the command is refused with ACCESS_DENIED.
-    reply = await ask(app, fake, "scam 777", user=PLAYER)
-    assert "Недостаточно прав" in reply
+    # Criterion 6: without rights the command is refused with ACCESS_DENIED: nothing in the chat,
+    # the refusal goes to the group logs (D-RM-8).
+    before = len(sent_by(fake, KASSA))
+    fake.post(KASSA, PLAYER, "scam 777")
+    await app.idle()
+    assert len(sent_by(fake, KASSA)) == before
+    await wait_for(lambda: any("Отказ в правах" in t and "/scam" in t for _, t in sent_by(fake, LOGS)),
+                   what="the refusal in logs")
     row = await app.db.pool.fetchrow("SELECT t.status, t.reason_code FROM trace_inbound t JOIN messages m "
                                      "USING (trace_id) WHERE m.text = 'scam 777'")
     assert (row["status"], row["reason_code"]) == ("cancelled", "ACCESS_DENIED")

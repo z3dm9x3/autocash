@@ -22,7 +22,7 @@ import asyncpg
 from pydantic import BaseModel
 
 from autocash.actions.entities import Candidate, Window, register_report, score
-from autocash.core.commands.rights import can_run
+from autocash.core.commands.rights import can_run, deny
 from autocash.core.trace.codes import Reason, Status
 from autocash.modules.api import Context, EntityDecl, Event, Module, TraceResolver
 from autocash.modules.deposits import store
@@ -400,7 +400,7 @@ class DepositsModule(Module):
             return
         assert self.services is not None
         if not can_run(self.services.runtime(), rec.sender_id, rec.chat_id, "summ"):
-            ctx.reply("Недостаточно прав для /summ.", rule="command.summ", kind="command_reply")
+            deny(self.services.notify, self.services.runtime(), rec.sender_id, rec.chat_id, "summ")
             ctx.finish(Status.CANCELLED, Reason.ACCESS_DENIED)
             return
         args = [str(a) for a in rec.fields.get("args") or []]

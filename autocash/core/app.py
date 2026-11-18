@@ -8,7 +8,8 @@ import contextlib
 import json
 import logging
 import time
-from collections.abc import Callable
+from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +24,12 @@ from autocash.core.config.loader import ConfigStore, Runtime
 from autocash.core.extractor.extractor import CompiledManifest, extract
 from autocash.core.gateway.gateway import Gateway, OwnMessages
 from autocash.core.output.output import Output
+from autocash.core.pool.limiter import READ
 from autocash.core.pool.poller import Poller
 from autocash.core.pool.pool import AccountPool
 from autocash.core.pool.scheduler import Scheduler
 from autocash.core.pool.sessions import ClientFactory, SessionError, SessionWatcher, load_key
+from autocash.core.protocols import Protocols
 from autocash.core.queue.manager import QueueManager
 from autocash.core.sorter.sorter import Sorter
 from autocash.core.storage.pg import Database, is_connection_error
@@ -80,6 +83,10 @@ class App:
     ) -> None:
         self.store = ConfigStore(config_path)
         cfg = self.store.current.config
+        # Users, groups and rights (D-RM-7): the local snapshot first, so the gateway and the rights
+        # work before PostgreSQL is reachable; Role Manager refreshes it from rm_* at start (the only
+        # source of truth: the snapshot is a cache, never edited).
+        self.store.directory.load(Path(sqlite_path).parent / "directory.json")
         # Accounts connected at start; more join and leave at run time through `self.pool`
         # or through the sessions directory (FT-1.2).
         self._clients: list[TelegramClient] = [*([client] if client is not None else []), *(clients or [])]
@@ -100,6 +107,7 @@ class App:
         self.poller = Poller(self.store, self.pool, self.scheduler)
         self.output = Output(self.store, self.db, self.writer, self.own, self.pool, self.scheduler)
         self.alerts = Alerts(self.store, self.db, self.writer, self.output)
+        self.protocols = Protocols(self.db, lambda: self.modules, self.alerts.logs)  # D-RM-12
         self.gateway = Gateway(self.store, self.buffer, self.own, self.alerts.logs)
         self.gateway.pool_user_ids = self.pool.user_ids
         self.pool.bind(self.gateway.on_event, self.alerts.alarm, self.alerts.logs)
@@ -181,6 +189,9 @@ class App:
     async def _start_pipeline(self) -> None:
         await self.db.wait_available()
         await self.db.migrate({m.name: m.migrations for m in self.modules if m.migrations is not None})
+        for module in self.modules:
+            await module.start()  # e.g. Role Manager loads the directory before any event is handled
+        self.protocols.start()
         self.writer.start()
         self._record_config(self.store.current)
         # Stored FloodWait pauses are applied before any active call is allowed (FT-10.3).
@@ -211,6 +222,7 @@ class App:
     async def stop(self) -> None:
         self.notifier.stopping()
         await self.web.stop()
+        await self.protocols.stop()
         await self.monitor.stop()
         await self.backfill.stop()
         if self.sessions is not None:
@@ -245,16 +257,26 @@ class App:
         self.pool.reconcilers.append(module.reconcile)
         module.bind(Services(self.db, self._reread, self.alerts.logs, lambda: self.store.current,
                              self.output.enqueue, lambda account_id: str(self.pool.state(account_id)),
-                             self._edit_config))
+                             self._dialog_history, self.protocols.wake))
         self.gateway.any_chat_commands.update(module.commands_any_chat)
         resolver = module.trace_resolver()
         if resolver is not None:
             self.commands.resolvers.append(resolver)
         self.modules.append(module)
 
-    async def _edit_config(self, author: int, summary: str, mutate: Callable[[dict[str, Any]], None]) -> str:
-        result = await self.web.editor.apply(author, summary, mutate)
-        return result.version_after
+    async def _dialog_history(self, account_id: int, chat_id: int, before_msg_id: int) -> bool | None:
+        """Did the private dialog have messages before this one? One getHistory (limit 1, the oldest
+        message) through the limiter of the account; None when it can not be told (D-RM-11)."""
+        acc = self.pool.accounts.get(account_id)
+        if acc is None:
+            return None
+        try:
+            oldest = await acc.limiter.call(READ, "getHistory", partial(
+                acc.client.get_history, chat_id, 0, datetime(2013, 8, 1, tzinfo=UTC), 1))
+        except Exception:
+            log.warning("history of dialog %s via %s is not known", chat_id, account_id, exc_info=True)
+            return None
+        return bool(oldest) and oldest[0].msg_id < before_msg_id
 
     async def _reread(self, chat_id: int, msg_ids: list[int]) -> bool:
         return await self.pool.reread(chat_id, msg_ids, self.scheduler.account_for("read", chat_id))

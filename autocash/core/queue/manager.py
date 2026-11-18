@@ -293,8 +293,11 @@ class QueueManager:
             self._match_cache[msg_type] = hit
         return hit
 
-    def subscribers(self, msg_type: str) -> int:
-        return len(self._matching(msg_type))
+    def subscribers(self, msg_type: str, chat_id: int = 0) -> int:
+        hit = self._matching(msg_type)
+        if chat_id > 0 and msg_type != UNKNOWN:
+            return len(hit) + sum(1 for r in self._runners.values() if r.module.private_dialogs and r not in hit)
+        return len(hit)
 
     def dispatch(self, rec: MessageRecord) -> None:
         """Deliver a sorted message to every subscribed module (FT-7.1)."""
@@ -305,6 +308,10 @@ class QueueManager:
                        if UNKNOWN in r.module.subscriptions and r.module.wants(rec)]
         else:
             targets = self._matching(rec.msg_type or UNKNOWN)
+        if rec.chat_id > 0:
+            # Modules that see every message of private dialogs (Role Manager: contacts, D-RM-11).
+            targets = [*targets, *(r for r in self._runners.values()
+                                   if r.module.private_dialogs and r not in targets)]
         for runner in self._runners.values():
             if runner in targets:
                 if runner.mq.offer(rec):
@@ -569,7 +576,7 @@ class QueueManager:
             if ok is None:
                 ok = runner in self._matching(rec.msg_type or UNKNOWN)
                 matching_cache[rec.msg_type or ""] = ok
-            if ok and rec.ingest_id not in mq.pending:
+            if (ok or (runner.module.private_dialogs and rec.chat_id > 0)) and rec.ingest_id not in mq.pending:
                 mq.force(rec)
                 self._trace_queued(runner, rec)
             mq.cursor = rec.ingest_id

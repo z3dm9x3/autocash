@@ -14,6 +14,7 @@ import yaml
 from pydantic import ValidationError
 
 from autocash.core.config.schema import Config, Policy, RuleCfg, SourceCfg
+from autocash.core.directory import OTHER, Directory
 from autocash.core.extractor.extractor import CompiledManifest, ManifestError, compile_manifest
 from autocash.core.sorter.rules import CompiledRule, RuleError, compile_rule
 
@@ -55,14 +56,20 @@ class Runtime:
     sources: dict[int, SourceRuntime]
     unknown_policy: Policy
     private_rules: list[CompiledRule] = field(default_factory=list)
+    # Users, groups, roles and rights (D-RM-7): shared by every Runtime of one ConfigStore.
+    directory: Directory = field(default_factory=Directory)
     _groups: dict[int, SourceRuntime] = field(default_factory=dict)
+    _groups_version: int = -1
 
     def group_role(self, chat_id: int) -> str | None:
-        """The role given to a group (D-RM-1), None when it has none of its own."""
-        return self.config.groups.get(bare_group_id(chat_id)) if chat_id < 0 else None
+        """The role given to a group by Role Manager, None when it has none of its own."""
+        return self.directory.group_role(bare_group_id(chat_id)) if chat_id < 0 else None
 
     def source(self, chat_id: int) -> SourceRuntime:
         if chat_id < 0:
+            if self._groups_version != self.directory.version:
+                self._groups.clear()  # a role changed: build the sources of groups again
+                self._groups_version = self.directory.version
             cached = self._groups.get(chat_id)
             if cached is None:
                 cached = self._groups[chat_id] = self._group_source(chat_id)
@@ -74,25 +81,24 @@ class Runtime:
                              self.config.defaults.private_chat_policy, frozenset({"dm"}), self.private_rules)
 
     def _group_source(self, chat_id: int) -> SourceRuntime:
-        defaults = self.config.defaults
         service = self.config.service_chats
         src = self.sources.get(chat_id)
         if chat_id in (service.logs, service.debug):
             # The system's own log groups are never processed (FT-2.4), whatever role they are given.
             return src or SourceRuntime(SourceCfg(chat_id=chat_id), "ignore", frozenset(), [])
         role = self.group_role(chat_id)
+        directory = self.directory
         if src is not None:
             if role is None:
                 return src
             # The role given by Role Manager wins over the roles written in `sources`.
-            return SourceRuntime(src.cfg, defaults.policy_by_role.get(role, "full"), frozenset({role}), src.rules)
+            return SourceRuntime(src.cfg, directory.policy(role), frozenset({role}), src.rules)
         if role is not None:
-            return SourceRuntime(SourceCfg(chat_id=chat_id, roles=[role]), defaults.policy_by_role.get(role, "full"),
+            return SourceRuntime(SourceCfg(chat_id=chat_id, roles=[role]), directory.policy(role),
                                  frozenset({role}), [])
-        # A group without a role: the default role, "other" - known to exist, not read (D-RM-2).
-        role = defaults.group_role
-        return SourceRuntime(SourceCfg(chat_id=chat_id), defaults.policy_by_role.get(role, self.unknown_policy),
-                             frozenset({role}), [], known=False)
+        # A group without a role: "other" - known to exist, not read (D-RM-2).
+        return SourceRuntime(SourceCfg(chat_id=chat_id), directory.policy(OTHER), frozenset({OTHER}),
+                             [], known=False)
 
     def sender_role(self, src: SourceRuntime, sender_id: int | None, anonymous: bool) -> str:
         if anonymous or sender_id is None:
@@ -100,8 +106,8 @@ class Runtime:
         role = src.cfg.senders.get(sender_id)
         if role:
             return role
-        roles = self.config.users.get(sender_id)
-        return roles[0] if roles else "user"
+        role = self.directory.users.get(sender_id)
+        return role if role is not None else "user"
 
 
 def _deep_merge(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
@@ -188,7 +194,9 @@ class ConfigStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self.directory = Directory()  # filled by Role Manager, survives reloads of the configuration
         self.current: Runtime = build_runtime(read_raw(path))
+        self.current.directory = self.directory
         self._listeners: list[Callable[[Runtime, Runtime], None]] = []
         self.on_error: Callable[[str], None] | None = None
 
@@ -204,6 +212,7 @@ class ConfigStore:
             if self.on_error:
                 self.on_error(message)
             return False, str(exc)
+        new.directory = self.directory
         old, self.current = self.current, new
         if old.version != new.version:
             for listener in self._listeners:
