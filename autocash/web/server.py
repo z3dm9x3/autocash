@@ -23,8 +23,8 @@ import asyncpg
 import jinja2
 from aiohttp import web
 
-from autocash.actions.send import OutboundDraft, insert_outbound
 from autocash.core.commands.service import CommandError
+from autocash.core.outbox.OBX_tasks import OutboundDraft, insert_outbound
 from autocash.web.auth import (
     WEB_EDIT,
     WEB_POOL,
@@ -320,10 +320,10 @@ class WebAdmin:
                               reply_to=int(reply) if reply else None, dedup_key=f"web:{uuid.uuid4()}")
         async with self.app.db.pool.acquire() as conn:
             task_id = await insert_outbound(conn, draft, parent_trace_id=None, module="web",
-                                            ttl_s=rt.config.output.ttl_s.get("notify", 3600.0),
+                                            ttl_s=rt.config.outbox.ttl_s.get("notify", 3600.0),
                                             config_version=rt.version)
         if task_id:
-            self.app.output.enqueue([task_id])
+            self.app.outbox.enqueue([task_id])
         await self.audit(author, "send", chat, bool(task_id), {"task_id": task_id, "trace_id": draft.trace_id,
                                                                 "reply_to": reply or None, "text": text[:500]})
         raise self.back("/send", msg=f"Поставлено в очередь отправки: задача {task_id}, трасса {draft.trace_id}")

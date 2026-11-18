@@ -21,9 +21,9 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import asyncpg
 
-from autocash.actions.send import OutboundDraft, insert_outbound
 from autocash.core.commands import render
 from autocash.core.commands.rights import can_run, deny
+from autocash.core.outbox.OBX_tasks import OutboundDraft, insert_outbound
 from autocash.core.trace.codes import Reason, Status
 from autocash.core.trace.monitor import STAGE_TITLES
 from autocash.modules.api import Context, Event, Module
@@ -103,7 +103,7 @@ class SystemCommands(Module):
 
     async def _emergency_reply(self, chat_id: int, name: str) -> None:
         text = await self.status() if name == "status" else self.accounts()
-        await self.app.output.direct_send(chat_id, render.clip(text + "\n(аварийный канал: PostgreSQL недоступен)"))
+        await self.app.outbox.direct_send(chat_id, render.clip(text + "\n(аварийный канал: PostgreSQL недоступен)"))
 
     def _spawn(self, coro: Any) -> None:
         task = asyncio.create_task(coro)
@@ -125,13 +125,13 @@ class SystemCommands(Module):
             reply_to=rec.msg_id, via_account=rec.account_id if rec.chat_id > 0 else None,
             dedup_key=f"{rec.trace_id}:system:{name}:result",
         )
-        ttl = rt.config.output.ttl_s.get("command_reply", 300.0)
+        ttl = rt.config.outbox.ttl_s.get("command_reply", 300.0)
 
         async def write(conn: asyncpg.Connection) -> int | None:
             return await insert_outbound(conn, draft, parent_trace_id=rec.trace_id, module=self.name, ttl_s=ttl,
                                          config_version=rt.version)
 
-        self.app.writer.submit(write, after=lambda task_id: self.app.output.enqueue([task_id]) if task_id else None)
+        self.app.writer.submit(write, after=lambda task_id: self.app.outbox.enqueue([task_id]) if task_id else None)
 
     async def run(self, name: str, args: list[str], *, author: int | None = None) -> str:
         if name == "trace":
@@ -143,7 +143,7 @@ class SystemCommands(Module):
         if name == "cancel":
             return await self.cancel(args, author)
         if name == "queue":
-            return render.queues(self.app.queues.stats(), self.app.output.stats())
+            return render.queues(self.app.queues.stats(), self.app.outbox.stats())
         if name == "accounts":
             return self.accounts()
         if name == "coverage":
@@ -208,8 +208,8 @@ class SystemCommands(Module):
             f"Недопокрытых чатов: {len(under)}" + (f" (из них с покрытием 0: {sum(1 for _, h, _ in under if h == 0)})"
                                                     if under else ""),
             "Очереди модулей: " + (", ".join(f"{n} {q['size']}" for n, q in queues.items()) or "нет"),
-            "Вывод: " + ", ".join(f"{k} {v}" for k, v in app.output.stats().get("waiting", {}).items())
-            if app.output.stats().get("waiting") else "Вывод: ожидающих нет",
+            "Вывод: " + ", ".join(f"{k} {v}" for k, v in app.outbox.stats().get("waiting", {}).items())
+            if app.outbox.stats().get("waiting") else "Вывод: ожидающих нет",
             "Зависшие: " + (", ".join(f"{s} {n}" for s, n in sorted(stuck.items())) or "нет"),
             f"Без правила (unknown): {sum(app.sorter.unknown.values())}",
             f"История: пачек {app.backfill.batches}"
@@ -405,7 +405,7 @@ class SystemCommands(Module):
     async def retry(self, args: list[str]) -> str:
         mods, outs, explicit = await self._select(args)
         restarted_mods = await self.app.queues.retry(mods)
-        ttl = self.app.store.current.config.output.ttl_s
+        ttl = self.app.store.current.config.outbox.ttl_s
         reopened: list[int] = []
         if outs:
             statuses = ["waiting", "in_progress"] + (["not_delivered", "expired", "cancelled"] if explicit else [])
@@ -418,7 +418,7 @@ class SystemCommands(Module):
                 "WHERE id = ANY($1::bigint[]) AND status = ANY($2::text[]) AND stage <> 'sending' RETURNING id",
                 outs, statuses, _json(ttl))
             reopened = [r["id"] for r in rows]
-            self.app.output.restart(reopened)
+            self.app.outbox.restart(reopened)
         if not restarted_mods and not reopened:
             return "Подходящих задач для перезапуска нет."
         return (f"Перезапущено: обработок модулем {len(restarted_mods)}, исходящих {len(reopened)}."
@@ -436,7 +436,7 @@ class SystemCommands(Module):
                 "WHERE id = ANY($1::bigint[]) AND finished_at IS NULL AND stage <> 'sending' RETURNING id",
                 outs, str(Reason.CANCELLED_BY_USER), who)
             cancelled_out = [r["id"] for r in rows]
-            self.app.output.cancelled(cancelled_out)
+            self.app.outbox.cancelled(cancelled_out)
         cancelled_mods = 0
         if mods:
             async with db.acquire() as conn, conn.transaction():

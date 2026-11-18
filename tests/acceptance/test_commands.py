@@ -126,7 +126,7 @@ class Relay(Module):
 async def test_ban_and_deleted_chat_are_visible_in_trace_with_reason(
     app_factory: AppFactory, fake: FakeTelegram, cfg: dict[str, Any]
 ) -> None:
-    cfg["output"]["ttl_s"] = {"command_reply": 60, "client_reply": 60, "notify": 60, "bulk": 60}
+    cfg["outbox"]["ttl_s"] = {"command_reply": 60, "client_reply": 60, "notify": 60, "bulk": 60}
     join_all(fake, ACC2)
     fake.add_chat(PLAYER, "private", "player", members=(ACCOUNT,))
     app = await started(app_factory(cfg=cfg, accounts=(ACCOUNT, ACC2), modules=[DemoModule(), Relay()]))

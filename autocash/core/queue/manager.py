@@ -20,9 +20,9 @@ from typing import Any
 
 import asyncpg
 
-from autocash.actions.send import OutboundDraft, insert_outbound
 from autocash.core import crashpoints
 from autocash.core.config.loader import ConfigStore
+from autocash.core.outbox.OBX_tasks import OutboundDraft, insert_outbound
 from autocash.core.record import MessageRecord
 from autocash.core.sorter.rules import UNKNOWN
 from autocash.core.storage.pg import Database, is_connection_error
@@ -492,7 +492,7 @@ class QueueManager:
                 rec.trace_id, module.name, rt.version, json.dumps(skipped, ensure_ascii=False))
         if failure is None:
             entry = _Commit(rec.trace_id, module.name, rec.ingest_id, queued_at, started, ctx.ops, ctx.drafts,
-                            rt.config.output.ttl_s, rt.version, ctx.final)
+                            rt.config.outbox.ttl_s, rt.version, ctx.final)
             crashpoints.hit("module_before_commit")
             try:
                 ids: list[int] = await self._commits.add_sync(entry)

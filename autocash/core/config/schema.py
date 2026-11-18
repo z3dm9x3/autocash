@@ -154,12 +154,13 @@ class ModuleCfg(Strict):
     config: dict[str, Any] = {}
 
 
-class PacingCfg(Strict):
-    """Send tempo of one account (FT-9.7). Zero switches a limit off."""
+class AntifloodCfg(Strict):
+    """OBX_Antifloodwaiter (D-OBX-2): limits of one account. Zero switches a limit off."""
 
-    per_chat_interval_s: float
-    per_account_interval_s: float
-    group_per_minute: int
+    per_account_per_minute: int  # every write to Telegram (send, pin), spread evenly over the minute
+    per_chat_interval_s: float  # between two writes of one account to one chat
+    group_per_minute: int  # writes of one account to one group per minute
+    jitter_s: float = 0.0  # a random extra pause up to this, so the sends are not a metronome
 
 
 class PoolCfg(Strict):
@@ -190,22 +191,28 @@ class PollCfg(Strict):
     idle_interval_s: float = 30  # used when the server names no timeout
 
 
-class OutputCfg(Strict):
-    pacing: dict[str, PacingCfg] = {
-        # Bots: published guidance - ~1 msg/s per chat, 20 per minute to a group, ~30 msg/s overall.
-        "bot": PacingCfg(per_chat_interval_s=1.0, per_account_interval_s=0.04, group_per_minute=20),
-        # User accounts: nothing is published; conservative (docs/decisions.md, D-1b-4).
-        "user": PacingCfg(per_chat_interval_s=3.0, per_account_interval_s=3.0, group_per_minute=10),
+class OutboxCfg(Strict):
+    # Telegram publishes limits for bots only (Bots FAQ: 1 msg/s per chat, 20/min per group, ~30 msg/s
+    # overall); halved (customer, 2026-11-18). User accounts: no published limit; 10 per minute per
+    # account (customer), spread evenly - never a burst, even when 500 people write at once (D-OBX-2).
+    antiflood: dict[str, AntifloodCfg] = {
+        "user": AntifloodCfg(per_account_per_minute=10, per_chat_interval_s=2.0, group_per_minute=10, jitter_s=1.0),
+        "bot": AntifloodCfg(per_account_per_minute=900, per_chat_interval_s=2.0, group_per_minute=10, jitter_s=0.0),
     }
     max_attempts: int = 5
     retry_base_s: float = 2.0
-    # OPEN-QUESTION: FT-9.6 — lifetime of outbound tasks by kind, seconds.
+    # OBX_Finalized: a send must return the message number within this time, or it is repeated
+    # with the same random_id (D-OBX-4).
+    confirm_timeout_s: float = 30.0
+    # OPEN-QUESTION: FT-9.6 — lifetime of outbound tasks by kind, seconds; past it: not delivered.
     ttl_s: dict[str, float] = {
         "command_reply": 300,
         "client_reply": 1800,
         "notify": 3600,
         "bulk": 86400,
     }
+    # Tasks finally not delivered are reported to the group logs at most once per this window.
+    failure_notice_window_s: float = 600.0
 
 
 class RetentionCfg(Strict):
@@ -318,7 +325,7 @@ class Config(Strict):
     writer: WriterCfg = WriterCfg()
     queue: QueueCfg = QueueCfg()
     modules: dict[str, ModuleCfg] = {}
-    output: OutputCfg = OutputCfg()
+    outbox: OutboxCfg = OutboxCfg()
     pool: PoolCfg = PoolCfg()
     coverage: CoverageCfg = CoverageCfg()
     poll: PollCfg = PollCfg()

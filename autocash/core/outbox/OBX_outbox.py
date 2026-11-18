@@ -1,23 +1,28 @@
-"""Output: every outgoing message is an outbound task with a trace (section 4.9 of the TZ).
+"""Outbox (OBX): the only component that writes to Telegram (OBX_readme.md, D-OBX-1).
 
-Routing (FT-9.4, FT-9.5):
-  * a private dialog is answered only by the account of that dialog; while it is not active
-    the task waits until its TTL with ACCOUNT_PAUSED / ACCOUNT_RESTRICTED / ACCOUNT_LOST;
-  * a group message or an internal notification is sent by any active account that is in the
-    chat and may write there; when the assigned account drops out the task moves to another
-    one, and with no suitable account it waits with NO_ACCOUNT_IN_CHAT.
+Modules create tasks (OBX_tasks); the Outbox sends them by its rules:
+  * OBX_Router (OBX_router.py): a task bound to an account (a private dialog, an account named by
+    the module) goes to that account; while it is not active the task waits until its TTL with
+    ACCOUNT_PAUSED / ACCOUNT_RESTRICTED / ACCOUNT_LOST. An unbound task (a group, a notification)
+    goes to the least loaded account that may write there; with none it waits NO_ACCOUNT_IN_CHAT;
+  * OBX_Antifloodwaiter (OBX_antiflood.py): writes of one account are spread evenly, within the
+    limits of the configuration; a FloodWait pauses the account on top of it;
+  * OBX_Finalized: a write is confirmed when Telegram returns the message number. No number within
+    `confirm_timeout_s` (the connection or the account was lost): the same account repeats the send
+    with the same random_id, and RANDOM_ID_DUPLICATE means "already delivered" (FT-9.3). A blocked
+    user, a gone chat, a forbidden write: final "not delivered" at once. Past the TTL: final
+    "expired". Final failures are reported to the group logs (throttled) and to the monitor log.
 Each account sends its tasks one by one, different accounts send in parallel (FT-9.2).
-`random_id` is stored with the task before the send; a retry reuses it and
-RANDOM_ID_DUPLICATE means "already delivered" (FT-9.3).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import secrets
 import time
-from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from typing import Any
@@ -27,6 +32,9 @@ import asyncpg
 from autocash.core import crashpoints
 from autocash.core.config.loader import ConfigStore
 from autocash.core.gateway.gateway import OwnMessages
+from autocash.core.outbox.OBX_antiflood import Antiflood
+from autocash.core.outbox.OBX_router import Decision, choose
+from autocash.core.outbox.OBX_tasks import OutboundDraft, insert_outbound
 from autocash.core.pool.limiter import CLIENT_REPLY, COMMAND_REPLY, NOTIFY
 from autocash.core.pool.pool import Account, AccountPool
 from autocash.core.pool.scheduler import SEND, Scheduler
@@ -38,17 +46,17 @@ from autocash.core.trace.codes import Reason, Status
 
 log = logging.getLogger(__name__)
 
-# Task priority (FT-9.8: command replies, client replies, notifications, bulk) -> budget class (FT-10.2).
-_BUDGET = {0: COMMAND_REPLY, 1: CLIENT_REPLY}
+# Task kind -> API budget class of the pool limiter (FT-10.2).
+_BUDGET = {"command_reply": COMMAND_REPLY, "client_reply": CLIENT_REPLY}
 
 _LOAD = """
-SELECT id, priority, chat_id, dialog_account_id, stage, account_id, finished_at,
+SELECT id, priority, chat_id, dialog_account_id, stage, account_id, finished_at, kind, action, binding,
        extract(epoch FROM expires_at)::float8 AS expires
 FROM outbound_tasks WHERE id = $1
 """
 _ASSIGN = """
 UPDATE outbound_tasks SET stage = 'assigned', status = 'in_progress', account_id = $2, reason_code = NULL,
-       wait_until = NULL, assigned_at = now()
+       wait_until = NULL, assigned_at = now(), router_used = $3, router_load = $4::jsonb
 WHERE id = $1 AND finished_at IS NULL
 """
 _SENDING = """
@@ -59,7 +67,8 @@ RETURNING attempts
 """
 _FINISH = """
 UPDATE outbound_tasks SET stage = coalesce($2, stage), status = $3, reason_code = $4, finished_at = now(),
-       delivered_msg_id = $5, wait_until = NULL
+       delivered_msg_id = $5, wait_until = NULL, antiflood_wait_ms = antiflood_wait_ms + $6,
+       confirmed_at = CASE WHEN $3 = 'delivered' THEN now() ELSE confirmed_at END
 WHERE id = $1 AND finished_at IS NULL
 """
 _WAIT = """
@@ -77,6 +86,9 @@ class _Task:
     chat_id: int
     dialog_account_id: int | None
     expires: float | None
+    kind: str = "notify"
+    action: str = "send"
+    bound: bool = False  # binding dialog / explicit: only dialog_account_id may send it
     pinned: int | None = None  # the account that must repeat a send whose outcome is unknown
     account: int | None = None  # assigned, waiting in that account's queue
     wait_reason: str | None = None
@@ -84,9 +96,10 @@ class _Task:
     in_inbox: bool = False
     sending: bool = False
     timer: asyncio.TimerHandle | None = None
+    waited_ms: int = 0  # held back by the antiflood
 
 
-class Output:
+class Outbox:
     def __init__(self, store: ConfigStore, db: Database, writer: BatchWriter, own: OwnMessages,
                  pool: AccountPool, scheduler: Scheduler) -> None:
         self._store = store
@@ -103,10 +116,12 @@ class Output:
         self._router: asyncio.Task[None] | None = None
         self._routing = 0
         self._sending = 0
-        self._acc_next: dict[int, float] = {}
-        self._chat_next: dict[tuple[int, int], float] = {}
-        self._group_window: dict[tuple[int, int], deque[float]] = {}
+        self.antiflood = Antiflood()
         self._started = False
+        # Final failures go to the group logs (set by the App), throttled; never about the logs themselves.
+        self.on_failure: Callable[[str], None] | None = None
+        self._failure_last = 0.0
+        self._failure_count = 0
         self.delivered = 0
         self.failed = 0
 
@@ -199,6 +214,14 @@ class Output:
         # Unfinished tasks continue from their last recorded stage (FT-11.6).
         rows = await self._db.pool.fetch(
             "SELECT id FROM outbound_tasks WHERE finished_at IS NULL ORDER BY priority, id")
+        # The antiflood window survives a restart: the writes of the last minute (D-OBX-2).
+        recent = await self._db.pool.fetch(
+            "SELECT a.account_id, t.chat_id, extract(epoch FROM now() - a.at)::float8 AS age FROM outbound_attempts a "
+            "JOIN outbound_tasks t ON t.id = a.task_id WHERE a.at > now() - interval '60 seconds' "
+            "AND a.result IN ('delivered', 'duplicate', 'pinned') AND a.account_id IS NOT NULL ORDER BY a.at")
+        now = time.monotonic()
+        for rec in recent:
+            self.antiflood.wrote(None, int(rec["account_id"]), int(rec["chat_id"]), at=now - float(rec["age"]))
         self._started = True
         self.enqueue([row["id"] for row in rows])
         self._router = asyncio.create_task(self._route_loop(), name="output-router")
@@ -273,7 +296,8 @@ class Output:
             row = await self._db.pool.fetchrow(_LOAD, task_id)
             if row is None or row["finished_at"] is not None:
                 return
-            task = _Task(row["id"], row["priority"], row["chat_id"], row["dialog_account_id"], row["expires"])
+            task = _Task(row["id"], row["priority"], row["chat_id"], row["dialog_account_id"], row["expires"],
+                         row["kind"], row["action"], row["binding"] != "none")
             if row["stage"] == "sending":
                 # The process died during a send: only the same account can repeat it with the same
                 # random_id and learn that the message was already delivered (FT-9.3).
@@ -288,13 +312,15 @@ class Output:
             await self._finish(task, None, Status.EXPIRED, Reason.TTL_EXPIRED)
             self.failed += 1
             return
-        account_id, reason, until = self._choose(task)
-        if account_id is None:
+        decision, reason, until = self._choose(task)
+        if decision is None:
             assert reason is not None
             await self._park(task, str(reason), until)
             return
+        account_id = decision.account_id
         task.account, task.wait_reason = account_id, None
-        self._writer.submit(lambda conn: conn.execute(_ASSIGN, task_id, account_id))
+        load = json.dumps({str(k): v for k, v in decision.load.items()}) if decision.load else None
+        self._writer.submit(lambda conn: conn.execute(_ASSIGN, task_id, account_id, decision.routed, load))
         queue = self._queues.get(account_id)
         if queue is None:
             queue = self._queues[account_id] = asyncio.PriorityQueue()
@@ -310,6 +336,8 @@ class Output:
     def _usable(self, task: _Task, account_id: int) -> bool:
         if self._pool.state(account_id) is not AccountState.ACTIVE:
             return False
+        if task.bound and task.dialog_account_id is not None and account_id != task.dialog_account_id:
+            return False
         return task.chat_id > 0 or task.pinned == account_id or account_id in self._senders(task.chat_id)
 
     def _dialog_account(self, task: _Task) -> int | None:
@@ -321,27 +349,34 @@ class Output:
         live = self._pool.live()
         return live[0].account_id if len(live) == 1 and not members else None
 
-    def _choose(self, task: _Task) -> tuple[int | None, Reason | None, float | None]:
-        """The account for the task, or the reason it has to wait (and until when, if known)."""
+    def _choose(self, task: _Task) -> tuple[Decision | None, Reason | None, float | None]:
+        """The account for the task (OBX_Router), or the reason it has to wait (and until when)."""
         pool = self._pool
-        fixed = task.pinned if task.pinned is not None else (
-            self._dialog_account(task) if task.chat_id > 0 else None)
-        if task.pinned is not None or task.chat_id > 0:
+        if task.pinned is not None:
+            fixed: int | None = task.pinned
+        elif task.chat_id > 0:
+            fixed = self._dialog_account(task)
+        elif task.bound:
+            fixed = task.dialog_account_id  # an account named by the module
+        else:
+            fixed = None
+        if task.pinned is not None or task.chat_id > 0 or task.bound:
             if fixed is None:
                 return None, Reason.NO_ACCOUNT_IN_CHAT, None
             state = pool.state(fixed)
             if state is AccountState.ACTIVE:
-                return fixed, None, None
+                if task.chat_id < 0 and task.pinned is None and fixed not in self._senders(task.chat_id):
+                    return None, Reason.NO_ACCOUNT_IN_CHAT, None
+                return Decision(fixed, False), None, None
             acc = pool.accounts.get(fixed)
             until = acc.limiter.paused_until() if acc is not None and state is AccountState.PAUSED else None
             return None, WAIT_REASON[state], until
-        senders = self._senders(task.chat_id)
-        if not senders:
+        decision = choose(self._senders(task.chat_id), self.antiflood,
+                          lambda a: self._queues[a].qsize() if a in self._queues else 0,
+                          self._scheduler.account_for(SEND, task.chat_id))
+        if decision is None:
             return None, Reason.NO_ACCOUNT_IN_CHAT, None
-        preferred = self._scheduler.account_for(SEND, task.chat_id)
-        if preferred in senders:
-            return preferred, None, None
-        return min(senders, key=lambda a: (self._queues[a].qsize() if a in self._queues else 0, a)), None, None
+        return decision, None, None
 
     async def _park(self, task: _Task, reason: str, until: float | None, retry: bool = False) -> None:
         task.account = None
@@ -394,34 +429,16 @@ class Output:
         task.wait_reason = None
 
     async def _pace(self, acc: Account, task: _Task) -> None:
-        """Send tempo by account and by chat (FT-9.7)."""
-        cfg = self._store.current.config.output.pacing.get(acc.kind)
-        if cfg is None:
-            return
-        key = (acc.account_id, task.chat_id)
-        now = time.monotonic()
-        ready = max(self._acc_next.get(acc.account_id, 0.0), self._chat_next.get(key, 0.0))
-        if task.chat_id < 0 and cfg.group_per_minute > 0:
-            window = self._group_window.setdefault(key, deque())
-            while window and now - window[0] >= 60.0:
-                window.popleft()
-            if len(window) >= cfg.group_per_minute:
-                ready = max(ready, window[0] + 60.0)
-        if ready > now:
-            await asyncio.sleep(ready - now)
+        """OBX_Antifloodwaiter: wait until this account may write to this chat (D-OBX-2)."""
+        cfg = self._store.current.config.outbox.antiflood.get(acc.kind)
+        delay = self.antiflood.delay(cfg, acc.account_id, task.chat_id)
+        if delay > 0:
+            task.waited_ms += int(delay * 1000)
+            await asyncio.sleep(delay)
 
     def _paced(self, acc: Account, task: _Task) -> None:
-        cfg = self._store.current.config.output.pacing.get(acc.kind)
-        if cfg is None:
-            return
-        key = (acc.account_id, task.chat_id)
-        now = time.monotonic()
-        self._acc_next[acc.account_id] = now + cfg.per_account_interval_s
-        self._chat_next[key] = now + cfg.per_chat_interval_s
-        if task.chat_id < 0 and cfg.group_per_minute > 0:
-            self._group_window.setdefault(key, deque()).append(now)
-        if len(self._chat_next) > 5000:
-            self._chat_next = {k: v for k, v in self._chat_next.items() if v > now}
+        cfg = self._store.current.config.outbox.antiflood.get(acc.kind)
+        self.antiflood.wrote(cfg, acc.account_id, task.chat_id)
 
     async def _write(self, sql: str, *args: Any, attempt: tuple[Any, ...] | None = None) -> Any:
         async def fn(conn: asyncpg.Connection) -> Any:
@@ -434,15 +451,52 @@ class Output:
         return await self._writer.submit_sync(fn)
 
     async def _finish(self, task: _Task, stage: str | None, status: Status, reason: str | None,
-                      msg_id: int | None = None, attempt: tuple[Any, ...] | None = None) -> None:
-        await self._write(_FINISH, task.id, stage, str(status), reason, msg_id, attempt=attempt)
+                      msg_id: int | None = None, attempt: tuple[Any, ...] | None = None,
+                      follow: OutboundDraft | None = None) -> None:
+        waited, task.waited_ms = task.waited_ms, 0
+
+        async def fn(conn: asyncpg.Connection) -> int | None:
+            await conn.execute(_FINISH, task.id, stage, str(status), reason, msg_id, waited)
+            if attempt is not None:
+                await conn.execute(_ATTEMPT, *attempt)
+            if follow is None:
+                return None
+            # "Send, then pin": the pin is a task of its own, bound to the same account (D-OBX-5).
+            row = await conn.fetchrow("SELECT trace_id, module, dedup_key, config_version, "
+                                      "extract(epoch FROM expires_at - now())::float8 AS left_s "
+                                      "FROM outbound_tasks WHERE id = $1", task.id)
+            follow.dedup_key = f"{row['dedup_key']}:pin"
+            return await insert_outbound(conn, follow, parent_trace_id=str(row["trace_id"]), module=row["module"],
+                                         ttl_s=max(float(row["left_s"] or 0), 60.0),
+                                         config_version=row["config_version"] or "")
+
+        follow_id = await self._writer.submit_sync(fn)
         self._forget(task)
+        if follow_id:
+            self.enqueue([follow_id])
+        if status in (Status.NOT_DELIVERED, Status.EXPIRED):
+            self._report(task, reason)
+
+    def _report(self, task: _Task, reason: str | None) -> None:
+        """A final failure: the monitor log always, the group logs at most once per window (D-OBX-4)."""
+        log.warning("outbox: task %s to %s finally failed: %s", task.id, task.chat_id, reason)
+        logs = self._store.current.config.service_chats.logs
+        if self.on_failure is None or task.chat_id == logs:
+            return
+        self._failure_count += 1
+        now = time.monotonic()
+        window = self._store.current.config.outbox.failure_notice_window_s
+        if self._failure_last and now - self._failure_last < window:
+            return
+        self._failure_last, count, self._failure_count = now, self._failure_count, 0
+        more = f" (неудач с прошлого сообщения: {count})" if count > 1 else ""
+        self.on_failure(f"Outbox: задача {task.id} в чат {task.chat_id} не доставлена: {reason}{more}")
 
     async def _send(self, acc: Account, task: _Task) -> None:
-        cfg = self._store.current.config.output
+        cfg = self._store.current.config.outbox
         row = await self._db.pool.fetchrow(
-            "SELECT text, random_id, reply_to, finished_at, (expires_at IS NOT NULL AND expires_at < now()) AS expired "
-            "FROM outbound_tasks WHERE id = $1", task.id,
+            "SELECT text, random_id, reply_to, finished_at, pin_msg_id, pin_after_send, "
+            "(expires_at IS NOT NULL AND expires_at < now()) AS expired FROM outbound_tasks WHERE id = $1", task.id,
         )
         if row is None or row["finished_at"] is not None:
             self._forget(task)
@@ -457,12 +511,16 @@ class Output:
             self._forget(task)
             return
         crashpoints.hit("output_before_send")
+        if task.action == "pin":
+            await self._pin(acc, task, int(row["pin_msg_id"]), attempts, cfg)
+            return
         self._own.register(chat_id, row["text"])
         try:
+            # OBX_Finalized: the message number must come back within confirm_timeout_s.
             msg_id: int | None = await acc.limiter.call(
-                _BUDGET.get(task.priority, NOTIFY), "send",
-                lambda: client.send_message(chat_id, row["text"], random_id=row["random_id"],
-                                            reply_to=row["reply_to"]),
+                _BUDGET.get(task.kind, NOTIFY), "send",
+                lambda: asyncio.wait_for(client.send_message(chat_id, row["text"], random_id=row["random_id"],
+                                                             reply_to=row["reply_to"]), cfg.confirm_timeout_s),
             )
             result = "delivered"
         except RandomIdDuplicate:
@@ -486,8 +544,34 @@ class Output:
         self._paced(acc, task)
         if msg_id is not None:
             self._own.delivered(chat_id, msg_id)
+        follow = None
+        if row["pin_after_send"] and msg_id is not None:
+            follow = OutboundDraft(chat_id=chat_id, text="", rule="pin", kind=task.kind, via_account=account,
+                                   action="pin", pin_msg_id=msg_id)
         await self._finish(task, "delivered", Status.DELIVERED, None, msg_id,
-                           attempt=(task.id, account, result, None))
+                           attempt=(task.id, account, result, None), follow=follow)
+        self.delivered += 1
+
+    async def _pin(self, acc: Account, task: _Task, msg_id: int, attempts: int, cfg: Any) -> None:
+        """Action "pin": silently, for both sides of a private dialog (D-OBX-5)."""
+        account, client, chat_id = acc.account_id, acc.client, task.chat_id
+        try:
+            await acc.limiter.call(_BUDGET.get(task.kind, NOTIFY), "pin", lambda: asyncio.wait_for(
+                client.pin_message(chat_id, msg_id), cfg.confirm_timeout_s))
+        except FloodWait as exc:
+            await self._write(_ATTEMPT, task.id, account, "flood_wait", exc.args[0])
+            self._release(task)
+            return
+        except TelegramError as exc:
+            await self._on_error(acc, task, exc.code, attempts, cfg.max_attempts, cfg.retry_base_s)
+            return
+        except (OSError, TimeoutError) as exc:
+            await self._retry(task, account, f"NETWORK:{type(exc).__name__}", attempts, cfg.max_attempts,
+                              cfg.retry_base_s)
+            return
+        self._paced(acc, task)
+        await self._finish(task, "delivered", Status.DELIVERED, None, msg_id,
+                           attempt=(task.id, account, "pinned", None))
         self.delivered += 1
 
     async def _on_error(self, acc: Account, task: _Task, code: str, attempts: int, max_attempts: int,

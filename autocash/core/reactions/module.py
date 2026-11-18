@@ -18,9 +18,9 @@ from typing import Any, ClassVar
 
 import asyncpg
 
-from autocash.actions.send import KIND_PRIORITY, OutboundDraft, insert_outbound
 from autocash.core.commands.rights import can_run, deny
 from autocash.core.config.schema import CommandArgCfg, ReactionRuleCfg
+from autocash.core.outbox.OBX_tasks import KIND_PRIORITY, OutboundDraft, insert_outbound
 from autocash.core.reactions.engine import Draft, Effects, Runner, log_row
 from autocash.core.record import MessageRecord
 from autocash.core.trace.codes import Reason, Status
@@ -270,7 +270,7 @@ class ReactionsModule(Module):
 
     async def _apply_direct(self, conn: asyncpg.Connection, rule: ReactionRuleCfg, effects: Effects, base: str,
                             parent: Any, version: str) -> list[int]:
-        ttl = self._rt().config.output.ttl_s
+        ttl = self._rt().config.outbox.ttl_s
         ids: list[int] = []
         for d in effects.drafts:
             draft = OutboundDraft(chat_id=d.chat_id, text=d.text, rule=f"{rule.id}:{d.step}", kind=d.kind,

@@ -58,7 +58,7 @@ BASE_CONFIG: dict[str, Any] = {
     },
     "uploader": {"batch_interval_ms": 50, "retry_max_s": 0.5},
     # Tests run without send pacing and without an API tempo unless a test sets them.
-    "output": {"pacing": {kind: {"per_chat_interval_s": 0, "per_account_interval_s": 0, "group_per_minute": 0}
+    "outbox": {"antiflood": {kind: {"per_chat_interval_s": 0, "per_account_per_minute": 0, "group_per_minute": 0}
                           for kind in ("user", "bot")}},
     "pool": {"api_rate_per_s": {"user": 0, "bot": 0}, "reconnect_s": 0.1, "rebalance_s": 2.0},
 }

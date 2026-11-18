@@ -11,14 +11,16 @@ import json
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
-from autocash.actions.send import OutboundDraft
+from autocash.core.outbox.OBX_tasks import OutboundDraft
 from autocash.core.record import MessageRecord
 from autocash.core.storage.pg import Database
+from autocash.core.telegram.api import RawEvent
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +123,11 @@ class Services:
     # One light getHistory through the limiter of that account (D-RM-11).
     dialog_history: Callable[[int, int, int], Awaitable[bool | None]] | None = None
     wake_protocols: Callable[[], None] = lambda: None  # after autocash.core.protocols.emit (D-RM-12)
+    # A task for the Outbox outside event handling (protocols, background): (draft, module) -> task id.
+    # The dedup key of the draft makes it once only (D-OBX-1).
+    outbox: Callable[[OutboundDraft, str], Awaitable[int | None]] | None = None
+    # (account, chat, since, limit) -> messages of a dialog, oldest first; a background read (D-AS-3).
+    read_dialog: Callable[[int, int, datetime, int], Awaitable[list[RawEvent]]] | None = None
 
 
 TraceResolver = Callable[[str], Awaitable[list[str]]]

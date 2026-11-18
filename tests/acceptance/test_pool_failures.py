@@ -112,7 +112,7 @@ async def test_ban_loses_account_group_tasks_move_private_ones_wait_and_expire(
     app_factory: AppFactory, fake: FakeTelegram, config: dict[str, Any]
 ) -> None:
     """Criterion 5 (FT-9.4, FT-9.5, FT-9.6)."""
-    config["output"]["ttl_s"] = {"command_reply": 3, "client_reply": 3, "notify": 60, "bulk": 60}
+    config["outbox"]["ttl_s"] = {"command_reply": 3, "client_reply": 3, "notify": 60, "bulk": 60}
     join_all(fake, ACC2)
     fake.add_chat(PLAYER, "private", "player", members=(ACCOUNT,))  # the player wrote to ACCOUNT only
     app = await started(app_factory(accounts=(ACCOUNT, ACC2), cfg=config))
@@ -180,8 +180,9 @@ async def test_kicked_account_and_deleted_chat_update_membership_and_tasks(
 
     # 2. The account lost a chat without any event: the send error updates the map and the task
     #    is handed to the other account.
-    victim2 = app.scheduler.account_for("send", KASSA2)
-    assert victim2 is not None
+    #    The victim is the account OBX_Router will choose: the least loaded, on a tie the send duty.
+    duty = app.scheduler.account_for("send", KASSA2)
+    victim2 = min((ACCOUNT, ACC2), key=lambda a: (app.outbox.antiflood.recent(a), a != duty, a))
     fake.chats[KASSA2].members.discard(victim2)
     fake.post(KASSA, BOT, "note one")
     await app.idle()
@@ -231,5 +232,6 @@ async def test_write_forbidden_keeps_reader_and_removes_sender(app_factory: AppF
     fake.chats[KASSA].readonly.add(other(victim))
     fake.post(KASSA, CASHER, "/ping")
     await app.idle()
-    last = await app.db.pool.fetchrow("SELECT status, reason_code FROM outbound_tasks ORDER BY id DESC LIMIT 1")
+    last = await app.db.pool.fetchrow("SELECT status, reason_code FROM outbound_tasks WHERE chat_id = $1 "
+                                      "ORDER BY id DESC LIMIT 1", KASSA)  # logs get a notice of it
     assert (last["status"], last["reason_code"]) == ("not_delivered", "CHAT_WRITE_FORBIDDEN")

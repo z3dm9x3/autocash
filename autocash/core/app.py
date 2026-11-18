@@ -23,8 +23,9 @@ from autocash.core.commands.service import SystemCommands
 from autocash.core.config.loader import ConfigStore, Runtime
 from autocash.core.extractor.extractor import CompiledManifest, extract
 from autocash.core.gateway.gateway import Gateway, OwnMessages
-from autocash.core.output.output import Output
-from autocash.core.pool.limiter import READ
+from autocash.core.outbox.OBX_outbox import Outbox
+from autocash.core.outbox.OBX_tasks import OutboundDraft, insert_outbound
+from autocash.core.pool.limiter import BACKFILL, READ
 from autocash.core.pool.poller import Poller
 from autocash.core.pool.pool import AccountPool
 from autocash.core.pool.scheduler import Scheduler
@@ -34,7 +35,7 @@ from autocash.core.queue.manager import QueueManager
 from autocash.core.sorter.sorter import Sorter
 from autocash.core.storage.pg import Database, is_connection_error
 from autocash.core.storage.writer import BatchWriter
-from autocash.core.telegram.api import TelegramClient
+from autocash.core.telegram.api import RawEvent, TelegramClient
 from autocash.core.trace.monitor import TraceMonitor
 from autocash.core.uploader.uploader import Uploader
 from autocash.core.watchdog import SystemdNotifier
@@ -105,15 +106,16 @@ class App:
         self.pool = AccountPool(self.store, self.db, self.writer)
         self.scheduler = Scheduler(self.store, self.pool, self.writer)
         self.poller = Poller(self.store, self.pool, self.scheduler)
-        self.output = Output(self.store, self.db, self.writer, self.own, self.pool, self.scheduler)
-        self.alerts = Alerts(self.store, self.db, self.writer, self.output)
+        self.outbox = Outbox(self.store, self.db, self.writer, self.own, self.pool, self.scheduler)
+        self.alerts = Alerts(self.store, self.db, self.writer, self.outbox)
         self.protocols = Protocols(self.db, lambda: self.modules, self.alerts.logs)  # D-RM-12
+        self.outbox.on_failure = self.alerts.logs  # OBX_Finalized: final failures (D-OBX-4)
         self.gateway = Gateway(self.store, self.buffer, self.own, self.alerts.logs)
         self.gateway.pool_user_ids = self.pool.user_ids
         self.pool.bind(self.gateway.on_event, self.alerts.alarm, self.alerts.logs)
         self.pool.subscribe(self.scheduler.request)
-        self.pool.subscribe(self.output.on_pool_change)
-        self.queues = QueueManager(self.store, self.db, self.writer, self.output.enqueue, self.alerts.logs)
+        self.pool.subscribe(self.outbox.on_pool_change)
+        self.queues = QueueManager(self.store, self.db, self.writer, self.outbox.enqueue, self.alerts.logs)
         # Debug and control commands are a core module (stage 1c).
         self.commands = SystemCommands(self)
         self.modules: list[Module] = []
@@ -199,7 +201,7 @@ class App:
         await self.queues.start()
         self.sorter.start()
         await self.sorter.recover()
-        await self.output.start()
+        await self.outbox.start()
         self.uploader.start()
         self.poller.start()
         self.monitor.start()
@@ -236,7 +238,7 @@ class App:
         await self.uploader.stop()
         await self.sorter.stop()
         await self.queues.stop()
-        await self.output.stop()
+        await self.outbox.stop()
         if self.ready.is_set() and self.db.available:
             # Update counters of chats and the last state changes: a restart continues from them.
             with contextlib.suppress(Exception):
@@ -256,13 +258,42 @@ class App:
         self.queues.register(module)
         self.pool.reconcilers.append(module.reconcile)
         module.bind(Services(self.db, self._reread, self.alerts.logs, lambda: self.store.current,
-                             self.output.enqueue, lambda account_id: str(self.pool.state(account_id)),
-                             self._dialog_history, self.protocols.wake))
+                             self.outbox.enqueue, lambda account_id: str(self.pool.state(account_id)),
+                             self._dialog_history, self.protocols.wake, self._create_outbound,
+                             self._read_dialog))
         self.gateway.any_chat_commands.update(module.commands_any_chat)
         resolver = module.trace_resolver()
         if resolver is not None:
             self.commands.resolvers.append(resolver)
         self.modules.append(module)
+
+    async def _create_outbound(self, draft: OutboundDraft, module: str) -> int | None:
+        """A task for the Outbox outside event handling (protocols, background work, D-OBX-1)."""
+        rt = self.store.current
+        async with self.db.pool.acquire() as conn:
+            task_id = await insert_outbound(conn, draft, parent_trace_id=None, module=module,
+                                            ttl_s=rt.config.outbox.ttl_s.get(draft.kind, 3600.0),
+                                            config_version=rt.version)
+        if task_id:
+            self.outbox.enqueue([task_id])
+        return task_id
+
+    async def _read_dialog(self, account_id: int, chat_id: int, since: datetime, limit: int) -> list[RawEvent]:
+        """Messages of a dialog from `since`, oldest first, pages of 100 through the limiter of the
+        account at the background priority (a read, not a write: the antiflood of sends does not apply)."""
+        acc = self.pool.accounts.get(account_id)
+        if acc is None:
+            return []
+        out: list[RawEvent] = []
+        after = 0
+        while len(out) < limit:
+            page = await acc.limiter.call(BACKFILL, "getHistory", partial(
+                acc.client.get_history, chat_id, after, since, min(100, limit - len(out))))
+            if not page:
+                break
+            out += page
+            after = page[-1].msg_id
+        return out
 
     async def _dialog_history(self, account_id: int, chat_id: int, before_msg_id: int) -> bool | None:
         """Did the private dialog have messages before this one? One getHistory (limit 1, the oldest
@@ -412,7 +443,7 @@ class App:
             queues = self.queues.stats()
             busy = (
                 stats["pending"] or len(self.writer) or self.sorter._queue.qsize()
-                or self.uploader.busy or self.sorter.busy or self.output.busy or self.poller.busy
+                or self.uploader.busy or self.sorter.busy or self.outbox.busy or self.poller.busy
                 or any(q["size"] or q["running"] or q["overflow"] for q in queues.values())
             )
             stable = 0 if busy else stable + 1

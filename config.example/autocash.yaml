@@ -160,14 +160,17 @@ poll:
   difference_limit: 100
   idle_interval_s: 30
 
-output:
-  # Send tempo by account kind (FT-9.7). Bots: Telegram's published guidance.
-  # User accounts: nothing is published, the values are conservative (D-1b-4).
-  pacing:
-    bot: {per_chat_interval_s: 1.0, per_account_interval_s: 0.04, group_per_minute: 20}
-    user: {per_chat_interval_s: 3.0, per_account_interval_s: 3.0, group_per_minute: 10}
+# Outbox (OBX): the only sender to Telegram (autocash/core/outbox/OBX_readme.md).
+outbox:
+  # OBX_Antifloodwaiter. Bots: Telegram's Bots FAQ halved (1 msg/s per chat -> 1 per 2 s, 20/min per group -> 10).
+  # User accounts: 10 writes per minute per account, spread evenly (one per ~6 s), plus a random pause.
+  antiflood:
+    user: {per_account_per_minute: 10, per_chat_interval_s: 2.0, group_per_minute: 10, jitter_s: 1.0}
+    bot: {per_account_per_minute: 900, per_chat_interval_s: 2.0, group_per_minute: 10, jitter_s: 0.0}
   max_attempts: 5
+  confirm_timeout_s: 30               # OBX_Finalized: no message number in this time -> repeat (same random_id)
   ttl_s: {command_reply: 300, client_reply: 1800, notify: 3600, bulk: 86400}   # OPEN-QUESTION: FT-9.6
+  failure_notice_window_s: 600
 
 retention:
   default_text_ttl_days: 90          # OPEN-QUESTION: FT-5.3

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, cast
 
 import asyncpg
@@ -95,3 +96,36 @@ async def member_groups(pool: asyncpg.Pool) -> list[int]:
     """Marked ids of the groups where accounts of the pool are."""
     rows = await pool.fetch("SELECT DISTINCT chat_id FROM chat_membership WHERE chat_id < 0")
     return [int(r["chat_id"]) for r in rows]
+
+
+@dataclass(slots=True)
+class Link:
+    player_id: int
+    created: bool  # a new player was made
+    mel_owner_differs: bool  # the MelID already belonged to a player other than the user's own
+
+
+async def link_player(pool: asyncpg.Pool, tg_id: int, mel_id: str, *, source: str) -> Link:
+    """Tie a Telegram account and a MelID to one player (D-RM-14).
+
+    - the MelID belongs to a player: the user joins that player (one person, several accounts);
+      if the user already has another player, nothing is merged (it is reported instead);
+    - else the MelID is added to the user's player, or to a new player.
+    The user row must exist (RM writes it on the first contact).
+    """
+    async with pool.acquire() as conn, conn.transaction():
+        own = await conn.fetchval("SELECT player_id FROM rm_users WHERE tg_id = $1 FOR UPDATE", tg_id)
+        owner = await conn.fetchval("SELECT player_id FROM rm_player_mel WHERE mel_id = $1", mel_id)
+        if owner is not None:
+            if own is None:
+                await conn.execute("UPDATE rm_users SET player_id = $2, updated_at = now() WHERE tg_id = $1",
+                                   tg_id, owner)
+                return Link(int(owner), False, False)
+            return Link(int(own), False, int(own) != int(owner))
+        created = own is None
+        if created:
+            own = await conn.fetchval("INSERT INTO rm_players (created_by) VALUES ($1) RETURNING player_id", source)
+            await conn.execute("UPDATE rm_users SET player_id = $2, updated_at = now() WHERE tg_id = $1", tg_id, own)
+        await conn.execute("INSERT INTO rm_player_mel (mel_id, player_id, source, tg_id) VALUES ($1, $2, $3, $4)",
+                           mel_id, own, source, tg_id)
+        return Link(int(own), created, False)

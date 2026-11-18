@@ -29,6 +29,7 @@ from autocash.core.reactions.module import ReactionsModule
 from autocash.core.telegram.api import TelegramClient
 from autocash.core.telegram.telethon_client import TelethonClient
 from autocash.modules.api import Module
+from autocash.modules.autosup.AS_module import AutosupModule
 from autocash.modules.demo.module import DemoModule
 from autocash.modules.deposits.module import DepositsModule
 from autocash.modules.players.module import PlayersModule
@@ -39,8 +40,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 # Role Manager is the first module: the others act on groups by their roles.
-AVAILABLE: dict[str, type[Module]] = {"role_manager": RoleManagerModule, "demo": DemoModule, "players": PlayersModule,
-                                      "deposits": DepositsModule, "reactions": ReactionsModule}
+AVAILABLE: dict[str, type[Module]] = {"role_manager": RoleManagerModule, "autosup": AutosupModule,
+                                      "demo": DemoModule, "players": PlayersModule, "deposits": DepositsModule,
+                                      "reactions": ReactionsModule}
 
 
 def build_modules(app_config_modules: dict[str, object]) -> list[Module]:

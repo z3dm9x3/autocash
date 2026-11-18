@@ -14,9 +14,9 @@ from collections import deque
 
 import asyncpg
 
-from autocash.actions.send import OutboundDraft, insert_outbound
 from autocash.core.config.loader import ConfigStore
-from autocash.core.output.output import Output
+from autocash.core.outbox.OBX_outbox import Outbox
+from autocash.core.outbox.OBX_tasks import OutboundDraft, insert_outbound
 from autocash.core.storage.pg import Database
 from autocash.core.storage.writer import BatchWriter
 
@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 
 
 class Alerts:
-    def __init__(self, store: ConfigStore, db: Database, writer: BatchWriter, output: Output) -> None:
+    def __init__(self, store: ConfigStore, db: Database, writer: BatchWriter, output: Outbox) -> None:
         self._store = store
         self._db = db
         self._writer = writer
@@ -56,7 +56,7 @@ class Alerts:
             return
         draft = OutboundDraft(chat_id=chat_id, text=text, rule=f"alert.{channel}", kind="notify",
                               dedup_key=f"alert:{uuid.uuid4()}")
-        ttl = rt.config.output.ttl_s.get("notify", 3600.0)
+        ttl = rt.config.outbox.ttl_s.get("notify", 3600.0)
 
         async def write(conn: asyncpg.Connection) -> int | None:
             return await insert_outbound(conn, draft, parent_trace_id=None, module=None, ttl_s=ttl,

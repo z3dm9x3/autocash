@@ -285,6 +285,10 @@ class TelethonClient:
             reply_to=types.InputReplyToMessage(reply_to_msg_id=reply_to) if reply_to else None,
         ))
 
+    async def pin_message(self, chat_id: int, msg_id: int) -> None:
+        await self._call("messages.updatePinnedMessage",
+                         self._client.pin_message(chat_id, msg_id, notify=False, pm_oneside=False))
+
     async def get_dialogs(self) -> list[DialogInfo]:
         if self.kind == "bot":
             return []  # Telegram gives bots no dialog list

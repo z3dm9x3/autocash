@@ -63,6 +63,7 @@ class FakeTelegram:
         self.chats: dict[int, FakeChat] = {}
         self.clients: dict[int, FakeClient] = {}
         self.sent: list[tuple[int, int, str, int]] = []  # (account_id, chat_id, text, msg_id)
+        self.pins: list[tuple[int, int, int]] = []  # (account_id, chat_id, msg_id)
         self.random_ids: dict[tuple[int, int], int] = {}
         # account -> queued failures: (method or None for any call, exception)
         self.failures: dict[int, deque[tuple[str | None, Exception]]] = defaultdict(deque)
@@ -215,6 +216,15 @@ class FakeTelegram:
         self.sent.append((account_id, chat_id, text, msg_id))
         return msg_id
 
+    def pin(self, account_id: int, chat_id: int, msg_id: int) -> None:
+        self._api_call(account_id, "pin")
+        chat = self.chats.get(chat_id)
+        if chat is None or account_id not in chat.members:
+            raise TelegramError("CHANNEL_PRIVATE")
+        if not any((m.ids.get(0) or m.ids.get(account_id)) == msg_id and not m.deleted for m in chat.messages):
+            raise TelegramError("MESSAGE_ID_INVALID")
+        self.pins.append((account_id, chat_id, msg_id))
+
     def messages(self, account_id: int, chat_id: int, ids: list[int]) -> list[RawEvent]:
         self._api_call(account_id, "getMessages")
         chat = self.chats.get(chat_id)
@@ -300,6 +310,10 @@ class FakeClient:
     async def send_message(self, chat_id: int, text: str, *, random_id: int, reply_to: int | None = None) -> int:
         await asyncio.sleep(0)
         return self.server.send(self.account_id, chat_id, text, random_id, reply_to)
+
+    async def pin_message(self, chat_id: int, msg_id: int) -> None:
+        await asyncio.sleep(0)
+        self.server.pin(self.account_id, chat_id, msg_id)
 
     async def get_dialogs(self) -> list[DialogInfo]:
         await asyncio.sleep(0)
