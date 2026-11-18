@@ -120,10 +120,10 @@ class Gateway:
             return
         self._touch(ev, src.policy, src.known, approx=ev.chat_kind == "group")
         if not src.known and ev.chat_id not in self._announced:
+            # Only the monitor log: an account sits in hundreds of groups without a role ("other"), and
+            # a notice per group to `logs` after every start would flood it (AGENTS.md, rule 9; D-RM-15).
             self._announced.add(ev.chat_id)
-            self._notify_logs(
-                f"Новый чат без роли: {ev.chat_title or ''} ({ev.chat_id}), политика приёма: {src.policy}"
-            )
+            log.info("chat without a role: %s (%s), intake policy: %s", ev.chat_title or "", ev.chat_id, src.policy)
         command = self._any_chat_command(ev, src.policy, rt)
         if src.policy == "presence" and command is None:
             return

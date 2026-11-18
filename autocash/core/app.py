@@ -108,7 +108,8 @@ class App:
         self.poller = Poller(self.store, self.pool, self.scheduler)
         self.outbox = Outbox(self.store, self.db, self.writer, self.own, self.pool, self.scheduler)
         self.alerts = Alerts(self.store, self.db, self.writer, self.outbox)
-        self.protocols = Protocols(self.db, lambda: self.modules, self.alerts.logs)  # D-RM-12
+        self.protocols = Protocols(self.db, lambda: self.modules, self.alerts.logs,  # D-RM-12
+                                   self._module_enabled)
         self.outbox.on_failure = self.alerts.logs  # OBX_Finalized: final failures (D-OBX-4)
         self.gateway = Gateway(self.store, self.buffer, self.own, self.alerts.logs)
         self.gateway.pool_user_ids = self.pool.user_ids
@@ -266,6 +267,10 @@ class App:
         if resolver is not None:
             self.commands.resolvers.append(resolver)
         self.modules.append(module)
+
+    def _module_enabled(self, name: str) -> bool:
+        mcfg = self.store.current.config.modules.get(name)
+        return mcfg is None or mcfg.enabled
 
     async def _create_outbound(self, draft: OutboundDraft, module: str) -> int | None:
         """A task for the Outbox outside event handling (protocols, background work, D-OBX-1)."""

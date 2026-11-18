@@ -112,3 +112,19 @@ async def test_second_contact_without_an_id_asks_as_the_first_but_stays_second(
     row = await app.db.pool.fetchrow("SELECT contact, state FROM as_dialogs WHERE tg_id = $1", QUIET)
     assert dict(row) == {"contact": "second", "state": "awaiting_id"}
     assert await app.db.pool.fetchval("SELECT contact_protocol FROM rm_users WHERE tg_id = $1", QUIET) == "second"
+
+
+async def test_switched_off_autosup_sends_nothing(app_factory: AppFactory, fake: FakeTelegram,
+                                                  cfg: dict[str, Any]) -> None:
+    cfg["modules"]["autosup"] = {"enabled": False}  # the quiet start: intake and roles only
+    app = await as_app(app_factory, fake, cfg)
+    fake.post(NEW, NEW, "Здравствуйте")
+    await app.idle()
+    await wait_for(lambda: _done(app), what="the protocol run")
+    assert sent_to(fake, NEW) == [] and fake.pins == []
+    assert await app.db.pool.fetchval("SELECT done_modules FROM protocol_runs") == []
+    assert await app.db.pool.fetchval("SELECT role FROM rm_users WHERE tg_id = $1", NEW) == "guest"
+
+
+async def _done(app: App) -> bool:
+    return bool(await app.db.pool.fetchval("SELECT count(*) FROM protocol_runs WHERE status = 'done'"))

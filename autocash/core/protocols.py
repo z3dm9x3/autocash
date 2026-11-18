@@ -38,9 +38,11 @@ async def emit(conn: asyncpg.Connection, protocol: str, subject: int, data: dict
 
 
 class Protocols:
-    def __init__(self, db: Database, modules: Callable[[], Sequence[Module]], notify: Callable[[str], None]) -> None:
+    def __init__(self, db: Database, modules: Callable[[], Sequence[Module]], notify: Callable[[str], None],
+                 enabled: Callable[[str], bool] = lambda name: True) -> None:
         self._db = db
         self._modules = modules
+        self._enabled = enabled  # a module switched off in the configuration takes no part
         self._notify = notify
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -89,7 +91,7 @@ class Protocols:
         data = json.loads(row["data"]) if isinstance(row["data"], str) else dict(row["data"])
         done = list(row["done_modules"])
         for module in self._modules():
-            if protocol not in module.protocols or module.name in done:
+            if protocol not in module.protocols or module.name in done or not self._enabled(module.name):
                 continue
             try:
                 await asyncio.wait_for(module.on_protocol(protocol, subject, data), module.timeout_s)
