@@ -36,6 +36,8 @@ from autocash.core.telegram.api import (
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
+# Recent dialogs read when the access hash of a private peer is not cached (D-OBX-6): two requests.
+PEER_DIALOGS = 200
 
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 # Base classes of Telethon errors: their names say nothing, the server text is in `.message`.
@@ -272,13 +274,28 @@ class TelethonClient:
             # Telethon could not resolve the peer from its cache: the account does not know this chat.
             raise TelegramError("PEER_ID_INVALID", str(exc)) from exc
 
+    async def _peer(self, chat_id: int) -> Any:
+        """The input peer of a chat. Telethon keeps access hashes in memory only, and a new private
+        dialog may arrive without the user's hash (a short update), and none survive a restart
+        (D-OBX-6). Then the recent dialogs of the account are read once: they carry the hash."""
+        client = self._client
+        try:
+            return await client.get_input_entity(chat_id)
+        except ValueError:
+            if chat_id < 0 or self.kind == "bot":
+                raise
+        log.info("peer %s is not in the cache of account %s: reading the recent dialogs", chat_id, self.account_id)
+        async for _ in client.iter_dialogs(limit=PEER_DIALOGS):
+            pass
+        return await client.get_input_entity(chat_id)
+
     async def send_message(self, chat_id: int, text: str, *, random_id: int, reply_to: int | None = None) -> int:
         result = await self._call("messages.sendMessage", self._send(chat_id, text, random_id, reply_to))
         return sent_message_id(result, random_id)
 
     async def _send(self, chat_id: int, text: str, random_id: int, reply_to: int | None) -> Any:
         client = self._client
-        peer = await client.get_input_entity(chat_id)
+        peer = await self._peer(chat_id)
         plain, entities = markdown.parse(text)
         return await client(functions.messages.SendMessageRequest(
             peer=peer, message=plain, entities=entities or None, random_id=random_id, no_webpage=True,
@@ -286,8 +303,10 @@ class TelethonClient:
         ))
 
     async def pin_message(self, chat_id: int, msg_id: int) -> None:
-        await self._call("messages.updatePinnedMessage",
-                         self._client.pin_message(chat_id, msg_id, notify=False, pm_oneside=False))
+        await self._call("messages.updatePinnedMessage", self._pin(chat_id, msg_id))
+
+    async def _pin(self, chat_id: int, msg_id: int) -> Any:
+        return await self._client.pin_message(await self._peer(chat_id), msg_id, notify=False, pm_oneside=False)
 
     async def get_dialogs(self) -> list[DialogInfo]:
         if self.kind == "bot":
@@ -305,16 +324,18 @@ class TelethonClient:
     async def get_history(self, chat_id: int, after_id: int, since: datetime, limit: int) -> list[RawEvent]:
         # reverse=True reads from old to new: from `since` at first, then after the last loaded id.
         kwargs: dict[str, Any] = {"min_id": after_id} if after_id else {"offset_date": since}
-        msgs = await self._call("messages.getHistory",
-                                self._client.get_messages(chat_id, limit=limit, reverse=True, **kwargs))
+        msgs = await self._call("messages.getHistory", self._messages(chat_id, limit=limit, reverse=True, **kwargs))
         return [replace(message_event("edit" if getattr(m, "edit_date", None) else "new", self.account_id, m),
                         source="backfill")
                 for m in msgs if m is not None and not isinstance(m, (types.MessageEmpty, types.MessageService))]
 
     async def get_messages(self, chat_id: int, ids: list[int]) -> list[RawEvent]:
-        msgs = await self._call("channels.getMessages", self._client.get_messages(chat_id, ids=ids))
+        msgs = await self._call("channels.getMessages", self._messages(chat_id, ids=ids))
         return [message_event("edit" if getattr(m, "edit_date", None) else "new", self.account_id, m)
                 for m in msgs if m is not None and not isinstance(m, types.MessageEmpty)]
+
+    async def _messages(self, chat_id: int, **kwargs: Any) -> Any:
+        return await self._client.get_messages(await self._peer(chat_id), **kwargs)
 
     async def get_channel_difference(self, chat_id: int, pts: int, limit: int = 100) -> Difference:
         result = await self._call("updates.getChannelDifference", self._difference(chat_id, pts, limit))
