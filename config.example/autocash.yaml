@@ -84,6 +84,13 @@ queue:
 # template must be written from recorded kassa messages (tests/fixtures/messages/README.md).
 modules:
   role_manager: {}                     # the first module: users, groups, roles, rights (RM_readme.md)
+  autosup:                             # talks to players: the ID; hands messages to TS, logs tickets (AS_readme.md)
+    config:
+      grace_s: 60
+  ticket_system:                       # tickets of players, C-ticket D / WW / Q; writes nothing (TS_readme.md)
+    config:
+      burst_s: 60                      # the first trigger within this minute types the ticket, none -> Q
+      # rules: [...]                   # replaces ALL default C-ticket rules (TS_rules.DEFAULT_RULES)
   # DRAFTS: the logic of kassa messages is not known yet, these modules are switched off.
   deposits:
     enabled: false

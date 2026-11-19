@@ -2,7 +2,8 @@
 
 Модуль узнаёт ID игрока (MelID) в личных сообщениях. Работает в фоне, только с личными сообщениями, по протоколам Role Manager.
 Решения: `docs/decisions.md`, D-AS-1…D-AS-4.
-Проект тикетов по депозитам и выводам (D-Ticket / WW-Ticket): `AS_tickets.md`.
+Autosup — модуль общения с игроком. Тикеты ведёт отдельный модуль Ticket System (`ticket_system/TS_readme.md`,
+D-TS-1…D-TS-3): Autosup передаёт ему каждое личное сообщение игрока и пишет в `logs` его результаты.
 
 ## Что делает
 
@@ -52,7 +53,19 @@
 - нормализованный ID, если пользователь написал его с пробелами;
 - закрепление сообщения с ID.
 
-Всё — через Outbox (`send`, `pin`), привязано к аккаунту диалога. В `logs` — только совпадение MelID с другим игроком. Создание игрока пишется в журнал монитора.
+Всё — через Outbox (`send`, `pin`), привязано к аккаунту диалога. Создание игрока пишется в журнал монитора.
+
+В `logs` Autosup пишет:
+- совпадение MelID с другим игроком;
+- тип каждого тикета TS, по одной записи на тикет (протоколы `ticket.d|ww|q`, D-TS-3):
+  `TS: тикет #123 — D · игрок 123456789 (@ник, MelID …) · аккаунт … · триггер: «пополнил»`.
+  Эти записи не зависят от `/as on|off`: переключатель касается только сообщений игроку.
+
+## Передача в Ticket System
+
+Каждое новое личное сообщение игрока (не персонала: casher, support, manager, admin, dev) Autosup передаёт в TS
+(`TS_api.receive`) вместе с `media_type` из `messages`. Если `modules.ticket_system` нет в конфиге, ничего не
+передаётся.
 
 ## Конфигурация (`modules.autosup.config`)
 
@@ -63,6 +76,7 @@
 | `wait_days` | 7 |
 | `history_messages` | 500 — глубина поиска во втором контакте |
 | `history_days` | 180 |
+| `ticket_log_text` | `TS: тикет #{id} — {ticket} · игрок {player} · аккаунт {account} · триггер: {trigger}` |
 
 История читается через лимитер аккаунта с фоновым приоритетом. Это чтение, лимит отправок на него не действует.
 
@@ -74,7 +88,8 @@
 
 ## Зависимости (явные)
 
-- **Role Manager:** протоколы `contact.first` / `contact.second`; `RM_store.link_player`; таблицы `rm_players`, `rm_player_mel`, `rm_users.player_id`.
+- **Role Manager:** протоколы `contact.first` / `contact.second`; `RM_store.link_player`; таблицы `rm_players`, `rm_player_mel`, `rm_users.player_id`, `rm_users.username`; `SERVICE_USERS`.
+- **Ticket System:** `TS_api.receive`, протоколы `ticket.d` / `ticket.ww` / `ticket.q`.
 - **Ядро:**
   - Outbox — `services.outbox`, действия `send` / `pin`;
   - `services.read_dialog`;

@@ -34,6 +34,7 @@ from autocash.modules.demo.module import DemoModule
 from autocash.modules.deposits.module import DepositsModule
 from autocash.modules.players.module import PlayersModule
 from autocash.modules.role_manager.RM_module import RoleManagerModule
+from autocash.modules.ticket_system.TS_module import TicketSystemModule
 
 log = logging.getLogger("autocash")
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,7 +42,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # Role Manager is the first module: the others act on groups by their roles.
 AVAILABLE: dict[str, type[Module]] = {"role_manager": RoleManagerModule, "autosup": AutosupModule,
-                                      "demo": DemoModule, "players": PlayersModule, "deposits": DepositsModule,
+                                      "ticket_system": TicketSystemModule, "demo": DemoModule,
+                                      "players": PlayersModule, "deposits": DepositsModule,
                                       "reactions": ReactionsModule}
 
 

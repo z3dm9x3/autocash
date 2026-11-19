@@ -68,12 +68,21 @@ def chat_kind(msg: Any) -> ChatKind:
     return "unknown"
 
 
+def _is_pdf(document: Any) -> bool:
+    if str(getattr(document, "mime_type", "") or "").lower() == "application/pdf":
+        return True
+    return any(str(getattr(a, "file_name", "") or "").lower().endswith(".pdf")
+               for a in getattr(document, "attributes", None) or [])
+
+
 def media_info(msg: Any) -> tuple[str | None, str | None]:
     media = getattr(msg, "media", None)
     if media is None:
         return None, None
     kind = type(media).__name__.removeprefix("MessageMedia").lower() or "media"
     inner = getattr(media, "photo", None) or getattr(media, "document", None)
+    if kind == "document" and inner is not None and _is_pdf(inner):
+        kind = "pdf"  # a receipt in PDF is a fact modules use (D-AS-10); other documents stay "document"
     ref = f"{kind}:{inner.id}" if inner is not None and getattr(inner, "id", None) is not None else None
     return kind, ref
 

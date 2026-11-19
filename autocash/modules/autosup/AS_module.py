@@ -11,6 +11,10 @@ Called by the protocols of Role Manager, works in the background, private dialog
   written (Role Manager: rm_players, rm_player_mel) and the message is pinned. An ID written with
   spaces is sent back normalized by Autosup, and that message of Autosup is pinned.
 - /as on | off | ? (Admin, Dev; only in a group with the role tech): the switch of Autosup.
+- the ticket system (TS, D-TS-1): Autosup is the side that talks to players. Every private message of a
+  player (not of the staff) is handed to TS (`TS_api.receive`); the results of TS come back as the
+  protocols ticket.d | ticket.ww | ticket.q, and Autosup writes each to the group `logs`. This does not
+  depend on /as on|off (that switch is about writing to players).
 Every write to Telegram is an Outbox task (send, pin); nothing is written to Telegram directly.
 """
 
@@ -25,16 +29,20 @@ from pydantic import BaseModel
 
 from autocash.core.commands.rights import can_run, deny
 from autocash.core.outbox.OBX_tasks import OutboundDraft
+from autocash.core.record import MessageRecord
 from autocash.core.trace.codes import Reason, Status
 from autocash.modules.api import Context, Event, Module, Services
 from autocash.modules.autosup.AS_ids import FoundId, find_id
 from autocash.modules.role_manager import RM_store
+from autocash.modules.role_manager.RM_module import SERVICE_USERS
+from autocash.modules.ticket_system import TS_api
 
 log = logging.getLogger(__name__)
 
 PREFIX = "AS"
 NAME = "autosup"
 SWITCH_ROLE = "tech"  # /as works only in a group with this role (customer, 2026-11-18)
+STAFF = frozenset({"casher", "support", "manager", "admin", "dev"})  # their private messages are not tickets
 
 
 class ASConfig(BaseModel):
@@ -43,11 +51,13 @@ class ASConfig(BaseModel):
     wait_days: float = 7.0  # waiting for the ID stops after this
     history_messages: int = 500  # contact.second: how deep the history of the dialog is read
     history_days: float = 180.0
+    # The record in `logs` of a typed ticket (D-TS-3). Fields: {id} {ticket} {player} {account} {trigger}.
+    ticket_log_text: str = "TS: тикет #{id} — {ticket} · игрок {player} · аккаунт {account} · триггер: {trigger}"
 
 
 class AutosupModule(Module):
     name: ClassVar[str] = NAME
-    protocols: ClassVar[list[str]] = ["contact.first", "contact.second"]
+    protocols: ClassVar[list[str]] = ["contact.first", "contact.second", *TS_api.PROTOCOLS]
     private_dialogs: ClassVar[bool] = True
     subscriptions: ClassVar[list[str]] = ["command.as"]
     commands: ClassVar[list[str]] = ["as"]
@@ -74,6 +84,9 @@ class AutosupModule(Module):
 
     # ---- protocols (D-RM-12) ---------------------------------------------------------------------
     async def on_protocol(self, protocol: str, subject: int, data: dict[str, Any]) -> None:
+        if protocol in TS_api.PROTOCOLS:
+            await self._ticket_log(subject, data)
+            return
         account_id, chat_id = int(data["account_id"]), int(data["chat_id"])
         if chat_id != subject or not self.enabled:
             return  # private dialogs only; switched off: nothing
@@ -142,8 +155,10 @@ class AutosupModule(Module):
         if event.msg_type == "command.as":
             await self._command(event, ctx)
             return
-        if (rec.chat_id <= 0 or rec.sender_id != rec.chat_id or rec.origin != "external" or rec.event != "new"
-                or not rec.text or not self.enabled):
+        if rec.chat_id <= 0 or rec.sender_id != rec.chat_id or rec.origin != "external" or rec.event != "new":
+            return
+        await self._to_ts(rec)
+        if not rec.text or not self.enabled:
             return
         row = await ctx.fetchrow(
             "SELECT account_id, contact, state, contact_at, asked_at FROM as_dialogs "
@@ -157,6 +172,47 @@ class AutosupModule(Module):
         if fid is None:
             return  # messages without an ID do not end the wait
         await self._register(rec.sender_id, rec.account_id, row["contact"], "reply", rec.msg_id, fid)
+
+    # ---- the ticket system (D-TS-1, D-TS-3) -------------------------------------------------------
+    async def _to_ts(self, rec: MessageRecord) -> None:
+        """Hand a private message of a player to TS (staff and Telegram's service messages are not tickets)."""
+        rt = self.svc.runtime()
+        tg_id = int(rec.sender_id or 0)
+        if (TS_api.config(rt) is None or rec.source == "backfill" or tg_id in SERVICE_USERS
+                or rt.directory.user_role(tg_id) in STAFF):
+            return  # history is never a ticket (D-TS-4); TS also drops messages written before it started
+        pool = self.svc.db.pool
+        media = await pool.fetchval("SELECT media_type FROM messages WHERE trace_id = $1::uuid LIMIT 1",
+                                    rec.trace_id) if rec.trace_id else None
+        msg = TS_api.PlayerMessage(tg_id=tg_id, account_id=rec.account_id, msg_id=rec.msg_id,
+                                   msg_date=datetime.fromtimestamp(rec.msg_date, UTC), text=rec.text, media_type=media)
+        if await TS_api.receive(pool, rt, msg):
+            self.svc.wake_protocols()
+
+    async def _ticket_log(self, ticket_id: int, data: dict[str, Any]) -> None:
+        """A typed ticket -> one record in `logs` (D-TS-3); once per ticket and type (the dedup key)."""
+        rt = self.svc.runtime()
+        logs = rt.config.service_chats.logs
+        if logs is None:
+            return
+        pool = self.svc.db.pool
+        tg_id, account_id = int(data["tg_id"]), int(data["account_id"])
+        user = await pool.fetchrow("SELECT username, player_id FROM rm_users WHERE tg_id = $1", tg_id)
+        mels = [str(r["mel_id"]) for r in await pool.fetch(
+            "SELECT mel_id FROM rm_player_mel WHERE player_id = $1 ORDER BY mel_id", user["player_id"])] \
+            if user is not None and user["player_id"] is not None else []
+        about = [f"@{user['username']}"] if user is not None and user["username"] else []
+        about += [f"MelID {', '.join(mels)}"] if mels else []
+        player = f"{tg_id} ({', '.join(about)})" if about else str(tg_id)
+        account = await pool.fetchval("SELECT name FROM accounts WHERE account_id = $1", account_id) or account_id
+        words = ", ".join(f"«{w}»" for w in data.get("trigger") or [])
+        reason = data.get("reason")
+        trigger = (f"{words} — депозит и вывод в одном сообщении" if reason == "mixed"
+                   else words if words else "нет за первую минуту")
+        text = self.cfg().ticket_log_text.format(id=ticket_id, ticket=data["ticket"], player=player, account=account,
+                                                 trigger=trigger)
+        await self._outbox(OutboundDraft(chat_id=logs, text=text, rule="ticket_log", kind="notify",
+                                         dedup_key=f"{NAME}:ticket:{ticket_id}:{data['ticket']}"))
 
     async def _command(self, event: Event, ctx: Context) -> None:
         rec = event.record

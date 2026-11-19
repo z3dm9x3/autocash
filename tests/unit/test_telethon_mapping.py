@@ -63,6 +63,19 @@ def test_media_type_and_reference() -> None:
     assert message_event("new", ME, msg(types.PeerUser(7001))).media_type is None
 
 
+def test_a_pdf_document_is_pdf_other_documents_stay_document() -> None:
+    def doc(mime: str, name: str) -> Any:
+        attrs = [types.DocumentAttributeFilename(file_name=name)]
+        return types.MessageMediaDocument(document=SimpleNamespace(id=901, mime_type=mime, attributes=attrs))
+
+    def media(m: Any) -> str | None:
+        return message_event("new", ME, msg(types.PeerUser(7001), media=m)).media_type
+
+    assert media(doc("application/pdf", "receipt.pdf")) == "pdf"
+    assert media(doc("application/octet-stream", "Чек.PDF")) == "pdf"  # by the name when the MIME is generic
+    assert media(doc("video/mp4", "IMG_1786.MP4")) == "document"
+
+
 def test_error_codes() -> None:
     assert error_code(errors.PeerFloodError(request=None)) == "PEER_FLOOD"
     assert error_code(errors.ChatWriteForbiddenError(request=None)) == "CHAT_WRITE_FORBIDDEN"
