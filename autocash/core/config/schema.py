@@ -155,12 +155,13 @@ class ModuleCfg(Strict):
 
 
 class AntifloodCfg(Strict):
-    """OBX_Antifloodwaiter (D-OBX-2): limits of one account. Zero switches a limit off."""
+    """OBX_Antifloodwaiter (D-OBX-2, D-OBX-7): limits of ONE account. Zero switches a limit off."""
 
-    per_account_per_minute: int  # every write to Telegram (send, pin), spread evenly over the minute
+    per_account_per_minute: int  # writes to Telegram (send, pin), spread evenly over the minute
     per_chat_interval_s: float  # between two writes of one account to one chat
     group_per_minute: int  # writes of one account to one group per minute
     jitter_s: float = 0.0  # a random extra pause up to this, so the sends are not a metronome
+    reads_per_minute: int = 0  # every other Telegram call (a FloodWait may come on any method)
 
 
 class PoolCfg(Strict):
@@ -172,7 +173,7 @@ class PoolCfg(Strict):
     # accounts, so the default is deliberately low (docs/decisions.md, D-1b-4).
     api_rate_per_s: dict[str, float] = {"user": 1.0, "bot": 10.0}
     backfill_share: float = Field(default=0.5, gt=0, le=1)  # backfill runs this much slower
-    flood_slowdown: float = 2.0
+    flood_slowdown: float = 1.0  # off: the OBX fuse halves the limits after a FloodWait (D-OBX-7)
     flood_recovery_s: float = 600
     reconnect_s: float = 2.0
     rebalance_s: float = 5.0  # OPEN-QUESTION: FT-1.7 — new duties take effect within N seconds
@@ -188,16 +189,21 @@ class PollCfg(Strict):
     chats_per_account: int = 10  # FT-2.5
     silence_norm_s: float = 600  # a chat silent for longer is polled first
     difference_limit: int = 100
-    idle_interval_s: float = 30  # used when the server names no timeout
+    idle_interval_s: float = 60  # used when the server names no timeout (D-OBX-7: ~10 reads a minute)
 
 
 class OutboxCfg(Strict):
     # Telegram publishes limits for bots only (Bots FAQ: 1 msg/s per chat, 20/min per group, ~30 msg/s
     # overall); halved (customer, 2026-11-18). User accounts: no published limit; 10 per minute per
     # account (customer), spread evenly - never a burst, even when 500 people write at once (D-OBX-2).
+    # Measured 2026-11-19 on the account Dmitry: ~70 sends and 60 reads of one chat per minute passed,
+    # the 61st read got FLOOD_WAIT_15. Set by the customer: 20 writes and 20 reads per minute per account,
+    # for user accounts and bots alike (D-OBX-7). A FloodWait halves both once (the fuse, OBX_fuse).
     antiflood: dict[str, AntifloodCfg] = {
-        "user": AntifloodCfg(per_account_per_minute=10, per_chat_interval_s=2.0, group_per_minute=10, jitter_s=1.0),
-        "bot": AntifloodCfg(per_account_per_minute=900, per_chat_interval_s=2.0, group_per_minute=10, jitter_s=0.0),
+        "user": AntifloodCfg(per_account_per_minute=20, per_chat_interval_s=2.0, group_per_minute=10, jitter_s=1.0,
+                             reads_per_minute=20),
+        "bot": AntifloodCfg(per_account_per_minute=20, per_chat_interval_s=2.0, group_per_minute=10, jitter_s=1.0,
+                            reads_per_minute=20),
     }
     max_attempts: int = 5
     retry_base_s: float = 2.0

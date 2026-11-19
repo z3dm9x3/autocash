@@ -106,9 +106,9 @@ class Backfill:
                     pass
 
     def _reader(self, chat_id: int) -> Any:
-        preferred = self._scheduler.account_for(READ_DUTY, chat_id)
+        duty = self._scheduler.account_for(READ_DUTY, chat_id)
         members = [a for a in self._pool.membership.members(chat_id) if self._pool.state(a) is AccountState.ACTIVE]
-        account = preferred if preferred in members else (members[0] if members else None)
+        account = self._pool.reader(members, duty)
         return self._pool.accounts.get(account) if account is not None else None
 
     async def _tick(self) -> bool:

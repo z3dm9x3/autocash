@@ -56,8 +56,11 @@ async def test_flood_wait_pauses_account_survives_restart_and_duties_move(
         "SELECT method, extract(epoch FROM paused_until)::float8 AS until FROM flood_pauses WHERE account_id = $1",
         victim)
     assert pause["method"] == "send" and 5.0 < pause["until"] - began < 9.0
-    attempts = await app.db.pool.fetch("SELECT account_id, result, error_code FROM outbound_attempts ORDER BY id")
+    attempts = await app.db.pool.fetch(  # the chat of the task (logs got the notice of the fuse, D-OBX-7)
+        "SELECT a.account_id, a.result, a.error_code FROM outbound_attempts a "
+        "JOIN outbound_tasks t ON t.id = a.task_id WHERE t.chat_id = $1 ORDER BY a.id", KASSA)
     assert [(a["account_id"], a["result"]) for a in attempts] == [(victim, "flood_wait"), (spare, "delivered")]
+    assert app.outbox.fuse.factor(victim) == 0.5 and app.outbox.fuse.factor(spare) == 1.0  # per account
     log = await app.db.pool.fetch(
         "SELECT old_state, new_state FROM account_state_log WHERE account_id = $1 ORDER BY id", victim)
     assert [(r["old_state"], r["new_state"]) for r in log] == [("disconnected", "active"), ("active", "paused")]

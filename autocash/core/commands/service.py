@@ -34,7 +34,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 COMMANDS = ("trace", "stuck", "retry", "cancel", "queue", "accounts", "coverage", "status", "reload", "metrics",
-            "backfill")
+            "backfill", "obx")
+TECH_ONLY = {"obx": "tech"}  # commands that work only in a group with this role (D-OBX-7)
 EMERGENCY = ("status", "accounts")  # served without PostgreSQL (NFT-18)
 _LINK = re.compile(r"(?:https?://)?t\.me/c/(\d+)/(\d+)")
 _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -75,6 +76,11 @@ class SystemCommands(Module):
             return
         if self._emergency_answered.pop((rec.chat_id, rec.msg_id), None) is not None:
             return  # already answered through the emergency channel while PostgreSQL was down
+        role = TECH_ONLY.get(name)
+        if role is not None and rt.group_role(rec.chat_id) != role:
+            ctx.reply(f"Команда /{name} работает только в группе с ролью {role}.", rule=f"command.{name}",
+                      kind="command_reply")
+            return
         if name in rt.config.commands.heavy:
             # A heavy report: confirm at once, deliver the result when it is ready (FT-12.6).
             ctx.reply(rt.config.commands.ack_text, rule=f"command.{name}", kind="command_reply")
@@ -157,7 +163,35 @@ class SystemCommands(Module):
             return await self.metrics(args)
         if name == "backfill":
             return await self.backfill(args)
+        if name == "obx":
+            return await self.obx(args, author)
         raise CommandError(f"Неизвестная команда /{name}")
+
+    # ---- /obx: the limits of the accounts and the fuse (D-OBX-7) ----------------------------------
+    async def obx(self, args: list[str], author: int | None) -> str:
+        outbox = self.app.outbox
+        if args and args[0].lower() == "reset":
+            target = args[1].lower() if len(args) > 1 else ""
+            if target != "all" and not target.lstrip("-").isdigit():
+                raise CommandError("Формат: /obx reset <ID аккаунта | all>")
+            accounts = await outbox.fuse.reset(None if target == "all" else int(target), author or 0)
+            if not accounts:
+                return "Сниженных лимитов нет: сбрасывать нечего."
+            text = f"Лимиты восстановлены: {', '.join(str(a) for a in accounts)}; автор {author}"
+            self.app.alerts.logs(f"Outbox: {text}")
+            return text
+        cfg = self.app.store.current.config.outbox.antiflood
+        lines = ["Лимиты аккаунтов (в минуту; после FloodWait — вдвое до /obx reset):"]
+        for acc in sorted(self.app.pool.live(), key=lambda a: a.account_id):
+            factor = outbox.fuse.factor(acc.account_id)
+            limits = cfg.get(acc.kind)
+            writes = max(1, int(limits.per_account_per_minute * factor)) if limits else 0
+            reads = max(1, int(limits.reads_per_minute * factor)) if limits else 0
+            mark = " — СНИЖЕНЫ (FloodWait)" if factor < 1 else ""
+            lines.append(f"{acc.account_id} {acc.name}: записи {outbox.antiflood.recent(acc.account_id)}/{writes}, "
+                         f"чтения {outbox.antiflood.recent_reads(acc.account_id)}/{reads}{mark}")
+        lines.append("/obx reset <ID | all> — вернуть полные лимиты")
+        return "\n".join(lines)
 
     # ---- /accounts, /coverage, /status: in-memory, no PostgreSQL --------------------------------
     def account_rows(self) -> list[dict[str, Any]]:

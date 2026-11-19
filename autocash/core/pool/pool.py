@@ -99,6 +99,10 @@ class AccountPool:
         self._timers: set[asyncio.TimerHandle] = set()
         self._zero_coverage: set[int] = set()
         self._coverage_check: asyncio.TimerHandle | None = None
+        # Set by the App from the Outbox (D-OBX-7): the read budget of an account, the fuse, the router of reads.
+        self.read_gate: Callable[[int, str, str], Awaitable[None]] | None = None
+        self.on_flood: Callable[[int, str, float], None] | None = None
+        self.pick_reader: Callable[[list[int], int | None], int | None] | None = None
         self._flusher: asyncio.Task[None] | None = None
 
     # ---- wiring --------------------------------------------------------------------------
@@ -194,6 +198,10 @@ class AccountPool:
             flood_recovery_s=cfg.flood_recovery_s,
         ))
         acc.limiter.on_pause = partial(self._on_pause, acc)
+        acc.limiter.gate = partial(self._gate, acc)
+        acc.limiter.on_flood = partial(self._flood, acc)
+        if hasattr(client, "extra_call"):
+            client.extra_call = acc.limiter.gate  # a call the adapter makes by itself counts as a read
         self._all.append(acc)
         acc.task = asyncio.create_task(self._supervise(acc), name=f"account-{name or id(client)}")
         await acc.started.wait()
@@ -470,13 +478,30 @@ class AccountPool:
             self.last_event[ev.chat_id] = time.monotonic()
             await self._handler(ev)
 
+    async def _gate(self, acc: Account, method: str) -> None:
+        if self.read_gate is not None:
+            await self.read_gate(acc.account_id, acc.kind, method)
+
+    def _flood(self, acc: Account, method: str, seconds: float) -> None:
+        if self.on_flood is not None:
+            self.on_flood(acc.account_id, method, seconds)
+
+    def reader(self, candidates: list[int], duty: int | None) -> int | None:
+        """The account that reads (OBX_Router for reads): the least loaded, the duty on a tie."""
+        if not candidates:
+            return None
+        if self.pick_reader is not None:
+            return self.pick_reader(candidates, duty)
+        return duty if duty in candidates else min(candidates)
+
     async def reread(self, chat_id: int, msg_ids: list[int], prefer: int | None = None) -> bool:
         """Re-read messages through an active reader of the chat (FT-З.10): the events go the usual
         way, so an edit missed by push becomes a new version; an unchanged message is a duplicate."""
         readers = [a for a in self.membership.members(chat_id) if self.state(a) is AccountState.ACTIVE]
-        if not readers:
+        chosen = self.reader(readers, prefer)
+        if chosen is None:
             return False
-        acc = self.accounts[prefer if prefer in readers else readers[0]]
+        acc = self.accounts[chosen]
         ids = sorted(set(msg_ids))
         for i in range(0, len(ids), 100):
             try:

@@ -145,7 +145,7 @@ pool:
   api_concurrency: 1                 # FT-10.1: 1 or 2 simultaneous API calls per account
   api_rate_per_s: {user: 1.0, bot: 10.0}   # active API calls; see docs/decisions.md, D-1b-4
   backfill_share: 0.5
-  flood_slowdown: 2.0                # tempo divisor after a FloodWait
+  flood_slowdown: 1.0                # off: the OBX fuse halves the limits after a FloodWait (D-OBX-7)
   flood_recovery_s: 600
   reconnect_s: 2.0
   rebalance_s: 5.0                   # OPEN-QUESTION: FT-1.7
@@ -158,15 +158,15 @@ poll:
   chats_per_account: 10              # FT-2.5
   silence_norm_s: 600
   difference_limit: 100
-  idle_interval_s: 30
+  idle_interval_s: 60
 
 # Outbox (OBX): the only sender to Telegram (autocash/core/outbox/OBX_readme.md).
 outbox:
   # OBX_Antifloodwaiter. Bots: Telegram's Bots FAQ halved (1 msg/s per chat -> 1 per 2 s, 20/min per group -> 10).
   # User accounts: 10 writes per minute per account, spread evenly (one per ~6 s), plus a random pause.
   antiflood:
-    user: {per_account_per_minute: 10, per_chat_interval_s: 2.0, group_per_minute: 10, jitter_s: 1.0}
-    bot: {per_account_per_minute: 900, per_chat_interval_s: 2.0, group_per_minute: 10, jitter_s: 0.0}
+    user: {per_account_per_minute: 20, per_chat_interval_s: 2.0, group_per_minute: 10, jitter_s: 1.0, reads_per_minute: 20}
+    bot: {per_account_per_minute: 20, per_chat_interval_s: 2.0, group_per_minute: 10, jitter_s: 1.0, reads_per_minute: 20}
   max_attempts: 5
   confirm_timeout_s: 30               # OBX_Finalized: no message number in this time -> repeat (same random_id)
   ttl_s: {command_reply: 300, client_reply: 1800, notify: 3600, bulk: 86400}   # OPEN-QUESTION: FT-9.6

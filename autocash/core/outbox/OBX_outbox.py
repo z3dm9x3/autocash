@@ -33,7 +33,8 @@ from autocash.core import crashpoints
 from autocash.core.config.loader import ConfigStore
 from autocash.core.gateway.gateway import OwnMessages
 from autocash.core.outbox.OBX_antiflood import Antiflood
-from autocash.core.outbox.OBX_router import Decision, choose
+from autocash.core.outbox.OBX_fuse import Fuse
+from autocash.core.outbox.OBX_router import Decision, choose, choose_reader
 from autocash.core.outbox.OBX_tasks import OutboundDraft, insert_outbound
 from autocash.core.pool.limiter import CLIENT_REPLY, COMMAND_REPLY, NOTIFY
 from autocash.core.pool.pool import Account, AccountPool
@@ -45,6 +46,9 @@ from autocash.core.telegram.api import FloodWait, RandomIdDuplicate, TelegramErr
 from autocash.core.trace.codes import Reason, Status
 
 log = logging.getLogger(__name__)
+
+# Methods that write to Telegram: paced by the Outbox queue; every other method is a read (D-OBX-7).
+WRITE_METHODS = frozenset({"send", "pin"})
 
 # Task kind -> API budget class of the pool limiter (FT-10.2).
 _BUDGET = {"command_reply": COMMAND_REPLY, "client_reply": CLIENT_REPLY}
@@ -117,6 +121,8 @@ class Outbox:
         self._routing = 0
         self._sending = 0
         self.antiflood = Antiflood()
+        # The fuse (D-OBX-7): a FloodWait halves the limits of the account once, until a reset by hand.
+        self.fuse = Fuse(db, lambda text: self.on_failure(text) if self.on_failure is not None else None)
         self._started = False
         # Final failures go to the group logs (set by the App), throttled; never about the logs themselves.
         self.on_failure: Callable[[str], None] | None = None
@@ -211,6 +217,7 @@ class Outbox:
     # ---- lifecycle -----------------------------------------------------------------------
     async def start(self) -> None:
         await self._db.wait_available()
+        await self.fuse.load()
         # Unfinished tasks continue from their last recorded stage (FT-11.6).
         rows = await self._db.pool.fetch(
             "SELECT id FROM outbound_tasks WHERE finished_at IS NULL ORDER BY priority, id")
@@ -236,6 +243,25 @@ class Outbox:
         await asyncio.gather(*tasks, return_exceptions=True)
         self._router = None
         self._workers.clear()
+
+    # ---- every other Telegram call: reads (D-OBX-7) ----------------------------------------------
+    async def read_gate(self, account_id: int, kind: str, method: str) -> None:
+        """Before any Telegram call of an account: a read waits for its slot in the read budget of
+        that account (priority 1 over the tasks of modules: reads have a budget of their own).
+        Writes (send, pin) are paced by the Outbox queue itself and pass."""
+        if method in WRITE_METHODS:
+            return
+        cfg = self._store.current.config.outbox.antiflood.get(kind)
+        delay = self.antiflood.reserve_read(cfg, account_id, self.fuse.factor(account_id))
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    def on_flood(self, account_id: int, method: str, seconds: float) -> None:
+        self.fuse.trip(account_id, method, seconds)
+
+    def pick_reader(self, candidates: list[int], duty: int | None) -> int | None:
+        """OBX_Router for reads: the account with the fewest reads in the last minute; the duty on a tie."""
+        return choose_reader(candidates, self.antiflood, duty)
 
     # ---- emergency channel (NFT-18) ------------------------------------------------------
     async def direct_send(self, chat_id: int, text: str, exclude: int | None = None) -> bool:
@@ -431,14 +457,14 @@ class Outbox:
     async def _pace(self, acc: Account, task: _Task) -> None:
         """OBX_Antifloodwaiter: wait until this account may write to this chat (D-OBX-2)."""
         cfg = self._store.current.config.outbox.antiflood.get(acc.kind)
-        delay = self.antiflood.delay(cfg, acc.account_id, task.chat_id)
+        delay = self.antiflood.delay(cfg, acc.account_id, task.chat_id, self.fuse.factor(acc.account_id))
         if delay > 0:
             task.waited_ms += int(delay * 1000)
             await asyncio.sleep(delay)
 
     def _paced(self, acc: Account, task: _Task) -> None:
         cfg = self._store.current.config.outbox.antiflood.get(acc.kind)
-        self.antiflood.wrote(cfg, acc.account_id, task.chat_id)
+        self.antiflood.wrote(cfg, acc.account_id, task.chat_id, factor=self.fuse.factor(acc.account_id))
 
     async def _write(self, sql: str, *args: Any, attempt: tuple[Any, ...] | None = None) -> Any:
         async def fn(conn: asyncpg.Connection) -> Any:

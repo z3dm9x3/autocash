@@ -26,6 +26,13 @@ class Decision:
     load: dict[int, int] = field(default_factory=dict)  # candidate -> writes last minute + queued
 
 
+def choose_reader(candidates: list[int], antiflood: Antiflood, duty: int | None = None) -> int | None:
+    """Reads: the account with the fewest reads in the last minute; on a tie the read duty of the chat."""
+    if not candidates:
+        return None
+    return min(candidates, key=lambda a: (antiflood.recent_reads(a), a != duty, a))
+
+
 def choose(candidates: list[int], antiflood: Antiflood, queued: Callable[[int], int],
            preferred: int | None = None) -> Decision | None:
     if not candidates:

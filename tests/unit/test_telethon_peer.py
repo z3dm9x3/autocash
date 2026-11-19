@@ -37,6 +37,7 @@ def adapter(fake: FakeTelethon, kind: str = "user") -> TelethonClient:
     client = TelethonClient.__new__(TelethonClient)
     client._client = fake
     client.account_id, client.kind = 8201927395, kind
+    client.extra_call = None
     return client
 
 
@@ -47,6 +48,19 @@ async def test_an_unknown_private_peer_is_found_through_the_recent_dialogs() -> 
     assert fake.sent_to == [("peer:1080307979", 5)] and fake.dialog_reads == 1
     await client.pin_message(1080307979, 6)  # now cached: no second read of the dialogs
     assert fake.dialog_reads == 1
+
+
+async def test_the_read_of_the_dialogs_waits_for_the_read_budget() -> None:
+    fake = FakeTelethon()
+    client = adapter(fake)
+    gated: list[str] = []
+
+    async def gate(method: str) -> None:
+        gated.append(method)
+
+    client.extra_call = gate
+    await client.pin_message(1080307979, 5)
+    assert gated == ["getDialogs"]  # the extra call is counted as a read (D-OBX-7)
 
 
 async def test_a_peer_that_is_nowhere_stays_an_error() -> None:

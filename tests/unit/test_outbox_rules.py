@@ -56,3 +56,32 @@ def test_router_takes_the_least_loaded_account() -> None:
     single = choose([3], af, lambda a: 0)
     assert single is not None and not single.routed
     assert choose([], af, lambda a: 0) is None
+
+
+def test_reads_have_their_own_budget_spread_evenly() -> None:
+    cfg = AntifloodCfg(per_account_per_minute=20, per_chat_interval_s=2.0, group_per_minute=10, reads_per_minute=20)
+    af = Antiflood()
+    delays = [af.reserve_read(cfg, 1) for _ in range(3)]  # three reads asked at once
+    assert delays[0] == 0.0 and 2.9 < delays[1] <= 3.0 and 5.9 < delays[2] <= 6.0  # one per 3 s
+    assert af.reserve_read(cfg, 2) == 0.0  # every account has its own budget
+    assert af.delay(cfg, 1, 100) == 0.0  # reads do not take the budget of writes
+
+
+def test_the_fuse_halves_reads_and_writes() -> None:
+    cfg = AntifloodCfg(per_account_per_minute=20, per_chat_interval_s=2.0, group_per_minute=10, reads_per_minute=20)
+    af = Antiflood()
+    af.reserve_read(cfg, 1, factor=0.5)
+    assert 5.9 < af.reserve_read(cfg, 1, factor=0.5) <= 6.0  # 10 reads a minute
+    af.wrote(cfg, 1, 100, factor=0.5)
+    assert 5.9 < af.delay(cfg, 1, 200, factor=0.5) <= 7.0  # 10 writes a minute (+ jitter 0)
+
+
+def test_the_router_of_reads_takes_the_least_loaded_reader() -> None:
+    from autocash.core.outbox.OBX_router import choose_reader
+    af = Antiflood()
+    for _ in range(3):
+        af.reserve_read(None, 1)
+    af.reserve_read(None, 2)
+    assert choose_reader([1, 2, 3], af) == 3
+    assert choose_reader([1, 2], af, duty=1) == 2
+    assert choose_reader([3, 4], af, duty=4) == 4  # a tie: the read duty

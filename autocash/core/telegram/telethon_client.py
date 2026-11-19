@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import datetime
 from typing import Any, TypeVar
@@ -36,8 +36,9 @@ from autocash.core.telegram.api import (
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
-# Recent dialogs read when the access hash of a private peer is not cached (D-OBX-6): two requests.
-PEER_DIALOGS = 200
+# Recent dialogs read when the access hash of a private peer is not cached (D-OBX-6): one request;
+# a new private dialog is on top of the list.
+PEER_DIALOGS = 20
 
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 # Base classes of Telethon errors: their names say nothing, the server text is in `.message`.
@@ -172,6 +173,8 @@ class TelethonClient:
         self._client = _Telethon(session, api_id, api_hash, flood_sleep_threshold=0)
         self._handler: EventHandler | None = None
         self.account_id = 0  # known after start()
+        # Set by the pool (D-OBX-7): a Telegram call the adapter makes by itself waits for the read budget.
+        self.extra_call: Callable[[str], Awaitable[None]] | None = None
         self.kind = "bot" if bot_token else "user"
 
     @classmethod
@@ -285,6 +288,8 @@ class TelethonClient:
             if chat_id < 0 or self.kind == "bot":
                 raise
         log.info("peer %s is not in the cache of account %s: reading the recent dialogs", chat_id, self.account_id)
+        if self.extra_call is not None:
+            await self.extra_call("getDialogs")
         async for _ in client.iter_dialogs(limit=PEER_DIALOGS):
             pass
         return await client.get_input_entity(chat_id)

@@ -75,6 +75,10 @@ sudo systemctl enable --now autocash
 `.\deploy\windowsutocash-pg.ps1 start | stop | status`. Перед запуском скрипт проверяет, что на диске больше 500 МБ.
 Сам сервис: `deploy/windows/autocash-run.ps1 start | stop | status | log`, журнал — `Documents/AutoCash Data/logs/autocash.log`.
 
+## Лимиты аккаунтов (Outbox)
+
+20 записей и 20 чтений в минуту на каждый аккаунт. FloodWait — лимиты аккаунта вдвое до ручного сброса, сообщение в `logs`. В группе tech: `/obx` — лимиты и нагрузка, `/obx reset <ID | all>` — вернуть полные. Подробно — `autocash/core/outbox/OBX_readme.md`.
+
 ## Обратная связь от команд (AGENTS.md, правило 9)
 
 Аккаунты пула — пользовательские, каждое их сообщение в группе видят кассиры и игроки, и каждое тратит лимиты Telegram. Поэтому:

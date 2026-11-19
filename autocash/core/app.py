@@ -111,6 +111,10 @@ class App:
         self.protocols = Protocols(self.db, lambda: self.modules, self.alerts.logs,  # D-RM-12
                                    self._module_enabled)
         self.outbox.on_failure = self.alerts.logs  # OBX_Finalized: final failures (D-OBX-4)
+        # Every Telegram call of every account goes through the Outbox budgets and fuse (D-OBX-7).
+        self.pool.read_gate = self.outbox.read_gate
+        self.pool.on_flood = self.outbox.on_flood
+        self.pool.pick_reader = self.outbox.pick_reader
         self.gateway = Gateway(self.store, self.buffer, self.own, self.alerts.logs)
         self.gateway.pool_user_ids = self.pool.user_ids
         self.pool.bind(self.gateway.on_event, self.alerts.alarm, self.alerts.logs)

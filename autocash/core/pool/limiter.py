@@ -42,6 +42,10 @@ class AccountLimiter:
         self.flood_slowdown = flood_slowdown
         self.flood_recovery_s = flood_recovery_s
         self.on_pause = on_pause
+        # Set by the Outbox (D-OBX-7): `gate` waits for the read budget of the account before a call
+        # takes a slot; `on_flood` learns of every FloodWait (the fuse halves the limits).
+        self.gate: Callable[[str], Awaitable[None]] | None = None
+        self.on_flood: Callable[[str, float], None] | None = None
         self.pauses: dict[str, float] = {}  # method -> wall-clock end; "" pauses the whole account
         self.calls = 0
         self.floods = 0
@@ -104,6 +108,8 @@ class AccountLimiter:
 
     # ---- calls ---------------------------------------------------------------------------
     async def call(self, priority: int, method: str, fn: Callable[[], Awaitable[T]]) -> T:
+        if self.gate is not None:
+            await self.gate(method)  # the budget is waited for before a slot is taken: no slot is held idle
         grant: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         heapq.heappush(self._waiters, (priority, next(self._seq), method, grant))
         self._kick()
@@ -119,6 +125,8 @@ class AccountLimiter:
             return await fn()
         except FloodWait as exc:
             self.pause(method, exc.seconds)
+            if self.on_flood is not None:
+                self.on_flood(method, exc.seconds)
             raise
         finally:
             self._running -= 1

@@ -95,11 +95,9 @@ class Poller:
 
     def _reader(self, chat_id: int) -> int | None:
         """The account that catches the chat up: its read duty, or any active member."""
-        assigned = self._scheduler.account_for(READ_DUTY, chat_id)
-        if assigned is not None and self._pool.state(assigned).value == "active":
-            return assigned
+        duty = self._scheduler.account_for(READ_DUTY, chat_id)
         members = [a for a in self._pool.membership.members(chat_id) if self._pool.state(a).value == "active"]
-        return min(members) if members else None
+        return self._pool.reader(members, duty)
 
     async def _fetch(self, acc: Account, chat_id: int) -> None:
         pool = self._pool
