@@ -9,6 +9,8 @@ import pytest
 
 from autocash.core.app import App
 from autocash.modules.autosup.AS_module import AutosupModule
+from autocash.modules.players import PL_store
+from autocash.modules.players.PL_module import PlayersModule
 from autocash.modules.role_manager.RM_module import RoleManagerModule
 from tests.conftest import ACCOUNT, KASSA, KASSA2, LOGS, PLAYER, AppFactory
 from tests.fake_telegram.server import FakeMessage, FakeTelegram
@@ -25,7 +27,7 @@ TECH = KASSA2  # a group given the role tech: /as works only there
 @pytest.fixture
 def cfg(config: dict[str, Any]) -> dict[str, Any]:
     # The 60 s of grace are 1 s in tests.
-    config["modules"] = {"role_manager": {}, "autosup": {"config": {"grace_s": 1.0}}}
+    config["modules"] = {"role_manager": {}, "players": {}, "autosup": {"config": {"grace_s": 1.0}}}
     return config
 
 
@@ -44,7 +46,7 @@ async def as_app(app_factory: AppFactory, fake: FakeTelegram, cfg: dict[str, Any
         if user not in fake.chats:
             fake.add_chat(user, "private", f"user {user}", members=(ACCOUNT,))
     rm = RoleManagerModule({ADMIN: "admin"})
-    return await started(app_factory(cfg=cfg, modules=[rm, AutosupModule()]))
+    return await started(app_factory(cfg=cfg, modules=[rm, PlayersModule(), AutosupModule()]))
 
 
 def sent_to(fake: FakeTelegram, user: int) -> list[str]:
@@ -52,10 +54,8 @@ def sent_to(fake: FakeTelegram, user: int) -> list[str]:
 
 
 async def player_of(app: App, tg_id: int) -> tuple[Any, list[str]]:
-    player = await app.db.pool.fetchval("SELECT player_id FROM rm_users WHERE tg_id = $1", tg_id)
-    mels = [r["mel_id"] for r in await app.db.pool.fetch(
-        "SELECT mel_id FROM rm_player_mel WHERE player_id = $1", player)] if player else []
-    return player, mels
+    player = await PL_store.player_of(app.db.pool, "tg", tg_id)
+    return player, await PL_store.mels_of_tg(app.db.pool, tg_id)
 
 
 async def test_first_contact_asks_takes_the_next_id_and_pins_it(app_factory: AppFactory, fake: FakeTelegram,

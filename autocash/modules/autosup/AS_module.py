@@ -8,8 +8,8 @@ Called by the protocols of Role Manager, works in the background, private dialog
   in the history of the dialog; found -> take it; not found -> as the first contact (the same 60 s,
   then the request), the dialog is marked "second";
 - while Autosup waits, the next message of the user with an ID (AS_ids) ends it: the player is
-  written (Role Manager: rm_players, rm_player_mel) and the message is pinned. An ID written with
-  spaces is sent back normalized by Autosup, and that message of Autosup is pinned.
+  written (the pair TGID - MelID goes to the graph of players, PL_store.add_link) and the message is
+  pinned. An ID written with spaces is sent back normalized by Autosup, and that message is pinned.
 - /as on | off | ? (Admin, Dev; only in a group with the role tech): the switch of Autosup.
 - the ticket system (TS, D-TS-1): Autosup is the side that talks to players. Every private message of a
   player (not of the staff) is handed to TS (`TS_api.receive`); the results of TS come back as the
@@ -33,7 +33,7 @@ from autocash.core.record import MessageRecord
 from autocash.core.trace.codes import Reason, Status
 from autocash.modules.api import Context, Event, Module, Services
 from autocash.modules.autosup.AS_ids import FoundId, find_id
-from autocash.modules.role_manager import RM_store
+from autocash.modules.players import PL_store
 from autocash.modules.role_manager.RM_module import SERVICE_USERS
 from autocash.modules.ticket_system import TS_api
 
@@ -79,6 +79,9 @@ class AutosupModule(Module):
         return ASConfig.model_validate(mod.config if mod is not None else {})
 
     async def start(self) -> None:
+        if await self.svc.db.pool.fetchval("SELECT to_regclass('pl_links') IS NULL"):
+            # The player of an ID is written to the graph of the module players (D-PL-3).
+            raise RuntimeError("Autosup needs the module players: add `players: {}` to `modules` of the configuration")
         self.enabled = bool(await self.svc.db.pool.fetchval("SELECT enabled FROM as_settings WHERE id = 1"))
         log.info("AS: Autosup is %s", "on" if self.enabled else "off")
 
@@ -197,12 +200,11 @@ class AutosupModule(Module):
             return
         pool = self.svc.db.pool
         tg_id, account_id = int(data["tg_id"]), int(data["account_id"])
-        user = await pool.fetchrow("SELECT username, player_id FROM rm_users WHERE tg_id = $1", tg_id)
-        mels = [str(r["mel_id"]) for r in await pool.fetch(
-            "SELECT mel_id FROM rm_player_mel WHERE player_id = $1 ORDER BY mel_id", user["player_id"])] \
-            if user is not None and user["player_id"] is not None else []
+        user = await pool.fetchrow("SELECT username FROM rm_users WHERE tg_id = $1", tg_id)
+        mels = await PL_store.mels_of_tg(pool, tg_id)
         about = [f"@{user['username']}"] if user is not None and user["username"] else []
-        about += [f"MelID {', '.join(mels)}"] if mels else []
+        more = f" и ещё {len(mels) - 5}" if len(mels) > 5 else ""  # a player may have thousands of MelIDs
+        about += [f"MelID {', '.join(mels[:5])}{more}"] if mels else []
         player = f"{tg_id} ({', '.join(about)})" if about else str(tg_id)
         account = await pool.fetchval("SELECT name FROM accounts WHERE account_id = $1", account_id) or account_id
         words = ", ".join(f"«{w}»" for w in data.get("trigger") or [])
@@ -248,7 +250,8 @@ class AutosupModule(Module):
     # ---- the player ------------------------------------------------------------------------------
     async def _register(self, tg_id: int, account_id: int, contact: str, found_in: str, msg_id: int,
                         fid: FoundId) -> None:
-        link = await RM_store.link_player(self.svc.db.pool, tg_id, fid.mel_id, source=NAME)
+        link = await PL_store.add_link(self.svc.db.pool, tg_id, fid.mel_id, source=NAME,
+                                       ref=f"{account_id}:{msg_id}")
         await self.svc.db.pool.execute(
             "INSERT INTO as_dialogs (tg_id, account_id, contact, state, mel_id, found_in, msg_id, player_id) "
             "VALUES ($1, $2, $3, 'done', $4, $5, $6, $7) ON CONFLICT (tg_id) DO UPDATE SET state = 'done', "
@@ -256,9 +259,10 @@ class AutosupModule(Module):
             "player_id = EXCLUDED.player_id, updated_at = now()",
             tg_id, account_id, contact, fid.mel_id, found_in, msg_id, link.player_id)
         log.info("AS: user %s -> player %s, MelID %s (%s, %s)", tg_id, link.player_id, fid.mel_id, contact, found_in)
-        if link.mel_owner_differs:
-            self.svc.notify(f"{PREFIX}: MelID {fid.mel_id} пользователя {tg_id} уже записан за другим игроком; "
-                            f"пользователь остался в игроке {link.player_id}, склейки нет")
+        if link.joined:
+            joined = ", ".join(f"#{p}" for p in link.joined)
+            self.svc.notify(f"{PREFIX}: MelID {fid.mel_id} пользователя {tg_id} связал игроков: "
+                            f"{joined} присоединён к #{link.player_id}")
         # Feedback: the message with the ID is pinned; an ID with spaces is written back normalized.
         if fid.spaced:
             draft = OutboundDraft(chat_id=tg_id, text=fid.mel_id, rule="id_normalized", kind="client_reply",

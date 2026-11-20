@@ -20,7 +20,8 @@ from autocash.core.app import App
 from autocash.core.record import MessageRecord
 from autocash.modules.api import Context, Event
 from autocash.modules.deposits.module import DepositsModule
-from autocash.modules.players.module import PlayersModule
+from autocash.modules.players import PL_store
+from autocash.modules.players.PL_module import PlayersModule
 from tests.conftest import BOT, CASHER, KASSA, KASSA2, LOGS, AppFactory, write_config
 from tests.fake_telegram.server import FakeTelegram
 from tests.helpers import sent_by, started, wait_for
@@ -75,7 +76,7 @@ def cfg(config: dict[str, Any]) -> dict[str, Any]:
     config["users"] = {ADMIN: ["admin"]}
     base = [r for r in config["templates"]["kassa"]["rules"] if r["id"] not in {t["id"] for t in KASSA_TEMPLATE}]
     config["templates"]["kassa"]["rules"] = KASSA_TEMPLATE + base
-    config["modules"] = {"deposits": {"config": {}}, "players": {"config": {"merge_confirm_threshold": 3}}}
+    config["modules"] = {"deposits": {"config": {}}, "players": {"config": {}}}
     return config
 
 
@@ -123,10 +124,10 @@ async def test_request_goes_through_every_stage(app_factory: AppFactory, fake: F
     assert sorted(stages) == sorted(["created", "requisites", "sent", "receipt", "final"])
 
     # The player: TGID <-> MelID, with the name history.
-    player = await app.db.pool.fetch("SELECT kind, value, player_id FROM player_idents ORDER BY kind")
+    player = await app.db.pool.fetch("SELECT kind, value, player_id FROM pl_nodes ORDER BY kind")
     assert [(r["kind"], r["value"]) for r in player] == [("mel", MEL), ("tg", TG)]
     assert len({r["player_id"] for r in player}) == 1
-    assert await app.db.pool.fetchval("SELECT username FROM player_names WHERE tgid = $1", TG) == "x"
+    assert await app.db.pool.fetchval("SELECT username FROM pl_names WHERE tg_id = $1", int(TG)) == "x"
 
     # Statistics from the daily aggregates; /trace by Deposit ID.
     summ = await ask(app, fake, "/summ")
@@ -256,41 +257,46 @@ async def snapshot(app: App) -> list[Any]:
     for sql in ("SELECT deposit_id, chat_id, kassas, stage, status, tgid, mel_id, amount, bonus, requisites, marks, "
                 "cashier_id, created_at, requisites_at, sent_at FROM deposits ORDER BY 1",
                 "SELECT deposit_id, trace_id, stage FROM deposit_events ORDER BY 1, 2, 3",
-                "SELECT kind, value, player_id FROM player_idents ORDER BY 1, 2",
-                "SELECT * FROM player_merges ORDER BY id", "SELECT * FROM deposit_daily ORDER BY 1, 2, 3, 4"):
+                "SELECT kind, value, player_id FROM pl_nodes ORDER BY 1, 2",
+                "SELECT link_id, tg_id, mel_id, state, first_seen, last_seen FROM pl_links ORDER BY 1",
+                "SELECT id, kind, into_player, from_player, link_id, moved FROM pl_journal ORDER BY id",
+                "SELECT * FROM deposit_daily ORDER BY 1, 2, 3, 4"):
         out.append([tuple(r) for r in await app.db.pool.fetch(sql)])
     return out
 
 
 # ---- players ------------------------------------------------------------------------------------------------
-async def test_players_merge_by_shared_melid_large_merge_waits_and_split_reverts(
+async def test_players_join_without_limit_and_a_cut_link_splits_them(
         app_factory: AppFactory, fake: FakeTelegram, cfg: dict[str, Any]) -> None:
-    app = await make(app_factory, cfg)  # threshold 3: a join making more than 3 identifiers waits
+    app = await make(app_factory, cfg)
     fake.post(KASSA, BOT, request("700", tg="1", mel="M1"))
     fake.post(KASSA, BOT, request("701", tg="2", mel="M1"))  # the same MelID: player {1, 2, M1}
     await app.idle()
-    groups = await players(app)
-    assert groups == [["mel:M1", "tg:1", "tg:2"]]
+    assert await players(app) == [["mel:M1", "tg:1", "tg:2"]]
 
     fake.post(KASSA, BOT, request("702", tg="3", mel="M2"))  # another player {3, M2}
     await app.idle()
-    fake.post(KASSA, BOT, request("703", tg="3", mel="M1"))  # would join 3 + 2 > 3 identifiers
+    first = await PL_store.player_of(app.db.pool, "tg", "1")
+    second = await PL_store.player_of(app.db.pool, "tg", "3")
+    fake.post(KASSA, BOT, request("703", tg="3", mel="M1"))  # TGID 3 used M1 too: one person (D-PL-1)
     await app.idle()
-    assert await players(app) == [["mel:M1", "tg:1", "tg:2"], ["mel:M2", "tg:3"]]
-    merge_id = await app.db.pool.fetchval("SELECT id FROM player_merges WHERE status = 'pending'")
-    await wait_for(lambda: any(f"/merge_ok {merge_id}" in t for _, t in sent_by(fake, LOGS)), what="notice")
-
-    assert "выполнено" in await ask(app, fake, f"/merge_ok {merge_id}")
     assert await players(app) == [["mel:M1", "mel:M2", "tg:1", "tg:2", "tg:3"]]
+    # The older player stays; the younger id points at it.
+    assert await PL_store.player_of(app.db.pool, "mel", "M2") == first
+    assert second is not None and await PL_store.current(app.db.pool, second) == first
     # Without a prefix the number is searched as TGID and as MelID.
     assert "Игрок #" in await ask(app, fake, "/player M2")
 
-    assert "разделено" in await ask(app, fake, f"/split {merge_id}")
+    # A link cut by hand: the player is rebuilt from the remaining links (D-PL-2).
+    assert "разорвана" in await ask(app, fake, "/unlink 3 M1")
     assert await players(app) == [["mel:M1", "tg:1", "tg:2"], ["mel:M2", "tg:3"]]
-    # The same pair again does not glue the split groups back.
+    assert await PL_store.player_of(app.db.pool, "mel", "M1") == first
+    # The same pair again does not glue the parts back: the link stays cut.
     fake.post(KASSA, BOT, request("704", tg="3", mel="M1"))
     await app.idle()
     assert len(await players(app)) == 2
+    assert "восстановлена" in await ask(app, fake, "/relink 3 M1")
+    assert len(await players(app)) == 1
 
 
 async def test_ambiguous_identifier_asks_for_a_prefix(app_factory: AppFactory, fake: FakeTelegram,
@@ -305,17 +311,15 @@ async def test_ambiguous_identifier_asks_for_a_prefix(app_factory: AppFactory, f
 
 
 async def test_sanction_marks_keep_author_and_time(app_factory: AppFactory, cfg: dict[str, Any]) -> None:
-    from autocash.modules.players import store
-
     app = await make(app_factory, cfg)  # the tables of the module exist when the module is connected
 
     async with app.db.pool.acquire() as conn:
-        assert await store.add_mark(conn, "scam", "tg", TG, author="8001", text="чек подделан",
+        assert await PL_store.add_mark(conn, "scam", "tg", TG, author="8001", text="чек подделан",
                                     trace_id="00000000-0000-0000-0000-000000000001")
-        assert not await store.add_mark(conn, "scam", "tg", TG, author="8001",
+        assert not await PL_store.add_mark(conn, "scam", "tg", TG, author="8001",
                                         trace_id="00000000-0000-0000-0000-000000000001")  # repeat: no new mark
-        await store.add_mark(conn, "unban", "tg", TG, author="8002")
-    rows = await app.db.pool.fetch("SELECT kind, author, created_at FROM player_marks ORDER BY id")
+        await PL_store.add_mark(conn, "unban", "tg", TG, author="8002")
+    rows = await app.db.pool.fetch("SELECT kind, author, created_at FROM pl_marks ORDER BY id")
     assert [(r["kind"], r["author"]) for r in rows] == [("scam", "8001"), ("unban", "8002")]
     assert all(r["created_at"] is not None for r in rows)
 
@@ -378,7 +382,7 @@ async def test_reports_answer_within_a_second_at_ten_times_the_volume(
 
 # ---- helpers ---------------------------------------------------------------------------------------------------
 async def players(app: App) -> list[list[str]]:
-    rows = await app.db.pool.fetch("SELECT player_id, kind || ':' || value AS ident FROM player_idents")
+    rows = await app.db.pool.fetch("SELECT player_id, kind || ':' || value AS ident FROM pl_nodes")
     groups: dict[int, list[str]] = {}
     for r in rows:
         groups.setdefault(r["player_id"], []).append(r["ident"])

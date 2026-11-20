@@ -336,7 +336,8 @@ id №<TGID> код вывода на 80 000 CxQz через примьер
 
 Монитор, PG 5433, БД `rucash` (только чтение; DSN — в `settings.ini` монитора, не выводить):
 
-- `raw_messages` — последняя версия сообщения. Карточки: `text like '[ВЫВОД]%' and sender_id = 7185799444 and raw_payload->'fwd_from' is null`.
+- `raw_messages` — последняя версия сообщения. Карточки: `text like '[ВЫВОД]%' and sender_id = 7185799444 and raw_payload->>'fwd_from' is null`.
+  Ключ `fwd_from` есть в каждом `raw_payload`, у непересланных — со значением JSON `null`: `->'fwd_from' is null` не находит ни одной строки, проверять через `->>` (текст).
 - `seeker_source_versions` (`raw_message_id`, `snapshot_json`) — все версии; кнопки и `callback data` — в `snapshot_json->'payload'->'reply_markup'`.
 - `chat_registry.title` — название группы; WW-группы: `title ilike any (array['%WW%','%вывод%','%withdraw%'])`.
 
@@ -351,7 +352,7 @@ select r.title, m.telegram_message_id, m.message_date,
        substring(m.text from '\(код: (\d+)\)')               as platform_code
 from raw_messages m
 join chat_registry r on r.chat_id = m.chat_id and r.telegram_account_id = m.telegram_account_id
-where m.text like '[ВЫВОД]%' and m.sender_id = 7185799444 and m.raw_payload->'fwd_from' is null;
+where m.text like '[ВЫВОД]%' and m.sender_id = 7185799444 and m.raw_payload->>'fwd_from' is null;
 
 -- сообщения кассы и поддержки по карточке
 select a.* from raw_messages a

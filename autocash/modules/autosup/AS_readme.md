@@ -14,11 +14,11 @@ D-TS-1…D-TS-3): Autosup передаёт ему каждое личное со
 | сообщение пользователя, пока Autosup ждёт ID | первое сообщение с ID: записать игрока и закрепить сообщение. Сообщения без ID ожидание не прерывают |
 
 Когда ID получен:
-1. RM: игрок (`rm_players`), его MelID (`rm_player_mel`), ссылка `rm_users.player_id`.
+1. Players: пара TGID — MelID в граф игроков (`PL_store.add_link`, источник `autosup`).
 2. ID без пробелов — закрепляется сообщение пользователя.
 3. ID с пробелами (`123 456 789`) — Autosup отправляет его без пробелов (`123456789`) и закрепляет своё сообщение.
 
-Если MelID уже записан за другим игроком, пользователь присоединяется к этому игроку: один человек, несколько аккаунтов. Если у пользователя уже есть свой, другой игрок, склейки нет — сообщение уходит в `logs`.
+Если MelID уже есть у игрока, пользователь присоединяется к нему: один человек, несколько аккаунтов. Если у пользователя уже был свой, другой игрок, два игрока склеиваются (D-PL-1), и в `logs` уходит запись об этом.
 
 Ожидание ID заканчивается через 7 дней (`expired`).
 
@@ -56,7 +56,7 @@ D-TS-1…D-TS-3): Autosup передаёт ему каждое личное со
 Всё — через Outbox (`send`, `pin`), привязано к аккаунту диалога. Создание игрока пишется в журнал монитора.
 
 В `logs` Autosup пишет:
-- совпадение MelID с другим игроком;
+- склейку игроков присланным ID: `AS: MelID … пользователя … связал игроков: #… присоединён к #…`;
 - тип каждого тикета TS, по одной записи на тикет (протоколы `ticket.d|ww|q`, D-TS-3):
   `TS: тикет #123 — D · игрок 123456789 (@ник, MelID …) · аккаунт … · триггер: «пополнил»`.
   Эти записи не зависят от `/as on|off`: переключатель касается только сообщений игроку.
@@ -82,13 +82,14 @@ D-TS-1…D-TS-3): Autosup передаёт ему каждое личное со
 
 ## Таблица `as_dialogs` (`AS_migrations/001_as_dialogs.sql`)
 
-`tg_id`, `account_id`, `contact` (first/second), `state` (grace / awaiting_id / done / expired), `contact_at` (первое сообщение), `ask_at` (конец 60 секунд), `asked_at`, `expires_at`, `mel_id`, `found_in` (reply/history), `msg_id`, `player_id`.
+`tg_id`, `account_id`, `contact` (first/second), `state` (grace / awaiting_id / done / expired), `contact_at` (первое сообщение), `ask_at` (конец 60 секунд), `asked_at`, `expires_at`, `mel_id`, `found_in` (reply/history), `msg_id`, `player_id` (игрок на момент записи; текущий — `PL_store.current` или по `tg_id`).
 
 `as_settings` — переключатель `/as on|off` (`AS_migrations/002_as_grace_switch.sql`).
 
 ## Зависимости (явные)
 
-- **Role Manager:** протоколы `contact.first` / `contact.second`; `RM_store.link_player`; таблицы `rm_players`, `rm_player_mel`, `rm_users.player_id`, `rm_users.username`; `SERVICE_USERS`.
+- **Role Manager:** протоколы `contact.first` / `contact.second`; таблица `rm_users.username`; `SERVICE_USERS`.
+- **Players:** `PL_store.add_link`, `PL_store.mels_of_tg`. Модуль обязателен: без таблиц `pl_*` Autosup не стартует.
 - **Ticket System:** `TS_api.receive`, протоколы `ticket.d` / `ticket.ww` / `ticket.q`.
 - **Ядро:**
   - Outbox — `services.outbox`, действия `send` / `pin`;

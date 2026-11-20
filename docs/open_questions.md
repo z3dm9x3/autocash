@@ -50,7 +50,7 @@
 | Отвечают ли кассиры reply на заявку | ФТ-З.9 | `modules.deposits.config.binding` | оба способа: `[reply, confirmation]` (D-2-4) |
 | X — через сколько минут сверять заявку без финала | ФТ-З.10 | `modules.deposits.config.reconcile_after_min` | 30 мин |
 | Y — через сколько часов заявка «зависла» | ФТ-З.11 | `modules.deposits.config.stuck_after_h` | 24 ч |
-| Порог размера группы для подтверждения слияния | ФТ-И.3 | `modules.players.config.merge_confirm_threshold` | 6 идентификаторов |
+| ~~Порог размера группы для подтверждения слияния~~ | ФТ-И.3 | — | **решено заказчиком 2026-11-20: порога нет** (D-PL-1); разделение — `/unlink` (D-PL-2) |
 | Допустимая доля unknown | этап 2 | `modules.deposits.config.unknown_share_max` | 5 % (проверка — на реальных образцах) |
 | Окно привязки заявки без Deposit ID | ФТ-З.7 | `modules.deposits.config.trusted_window_min` | 120 мин |
 

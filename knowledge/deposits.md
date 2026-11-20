@@ -676,8 +676,11 @@ import configparser, psycopg
 cp = configparser.ConfigParser(interpolation=None)
 cp.read(r"C:\Users\Den\Documents\ChatGPT\CASH MONITOR DEV\settings.ini", encoding="utf-8-sig")
 conn = psycopg.connect(cp.get("postgres", "dsn"))
+conn.execute("SET client_encoding TO 'UTF8'")
 ```
-Python и `psycopg` — из `.venv` монитора.
+Python и `psycopg` — из `.venv` монитора. На Windows без `client_encoding UTF8` кириллица в тексте запроса (`like '[ДЕПОЗИТ%'`) не совпадает с данными, и запрос молча возвращает 0 строк.
+
+Пересланные копии отсекать условием `raw_payload->>'fwd_from' is null`: ключ `fwd_from` есть в каждом `raw_payload` (у непересланных — JSON `null`), поэтому `->'fwd_from' is null` не находит ничего.
 
 #### Таблицы
 

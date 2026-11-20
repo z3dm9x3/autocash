@@ -80,10 +80,13 @@ queue:
   warn_lag_s: 5.0
 
 # Modules are listed explicitly. `demo` counts messages and answers /ping: testing only.
-# `deposits` and `players` need the kassa template rules (types deposit.*, method.*): the
+# `deposits` needs the kassa template rules (types deposit.*, method.*): the
 # template must be written from recorded kassa messages (tests/fixtures/messages/README.md).
 modules:
   role_manager: {}                     # the first module: users, groups, roles, rights (RM_readme.md)
+  players:                             # one person behind many TGIDs and MelIDs; needed by autosup (PL_readme.md)
+    config:
+      staff_user_types: [CASHIER]      # «Тип пользователя» of a card whose pair joins nothing
   autosup:                             # talks to players: the ID; hands messages to TS, logs tickets (AS_readme.md)
     config:
       grace_s: 60
@@ -100,10 +103,6 @@ modules:
       reconcile_after_min: 30          # OPEN-QUESTION: FT-З.10 - X
       stuck_after_h: 24                # OPEN-QUESTION: FT-З.11 - Y
       unknown_share_max: 0.05          # OPEN-QUESTION: stage 2 - acceptable share of unknown
-  players:
-    enabled: false
-    config:
-      merge_confirm_threshold: 6       # OPEN-QUESTION: FT-И.3 - larger joins wait for a staff decision
   reactions: {}                        # rules below; the module must be listed to run them
 
 # Loading the history of chats (stage 4): /backfill start [days] [all | chat_id], pause, resume, status.

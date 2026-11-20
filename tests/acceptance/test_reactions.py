@@ -15,7 +15,8 @@ import yaml
 
 from autocash.core.app import App
 from autocash.core.reactions.module import ReactionsModule
-from autocash.modules.players.module import PlayersModule
+from autocash.modules.players import PL_store
+from autocash.modules.players.PL_module import PlayersModule
 from tests.conftest import ACCOUNT, KASSA, LOGS, PLAYER, AppFactory, write_config
 from tests.fake_telegram.server import FakeTelegram
 from tests.helpers import sent_by, started, wait_for
@@ -179,8 +180,8 @@ async def test_scam_unban_rights_marks_and_clarification(
         app_factory: AppFactory, fake: FakeTelegram, cfg: dict[str, Any]) -> None:
     app = await make(app_factory, cfg)
     # "555" is a TGID of one player and a MelID of another (FT-12.5).
-    await app.db.pool.execute("INSERT INTO player_idents (kind, value, player_id) VALUES "
-                              "('tg', '555', 1), ('mel', 'A', 1), ('mel', '555', 2), ('tg', '42', 2)")
+    await PL_store.add_link(app.db.pool, 555, "A", source="test")
+    await PL_store.add_link(app.db.pool, 42, "555", source="test")
 
     # Criterion 6: without rights the command is refused with ACCESS_DENIED: nothing in the chat,
     # the refusal goes to the group logs (D-RM-8).
@@ -193,7 +194,7 @@ async def test_scam_unban_rights_marks_and_clarification(
     row = await app.db.pool.fetchrow("SELECT t.status, t.reason_code FROM trace_inbound t JOIN messages m "
                                      "USING (trace_id) WHERE m.text = 'scam 777'")
     assert (row["status"], row["reason_code"]) == ("cancelled", "ACCESS_DENIED")
-    assert await app.db.pool.fetchval("SELECT count(*) FROM player_marks") == 0
+    assert await app.db.pool.fetchval("SELECT count(*) FROM pl_marks") == 0
 
     # With rights: an unambiguous id is marked at once, with the author.
     assert "Страйк записан: tg:777" in await ask(app, fake, "scam 777")
@@ -201,7 +202,7 @@ async def test_scam_unban_rights_marks_and_clarification(
     assert "Уточните: tg:555 или mel:555" in await ask(app, fake, "/scam 555")
     assert "Страйк записан: mel:555" in await ask(app, fake, "mel:555")
     assert "Разблокирован: tg:777" in await ask(app, fake, "unban tg:777")
-    marks = await app.db.pool.fetch("SELECT kind, ident_kind, ident, author FROM player_marks ORDER BY id")
+    marks = await app.db.pool.fetch("SELECT kind, ident_kind, ident, author FROM pl_marks ORDER BY id")
     assert [(m["kind"], m["ident_kind"], m["ident"], m["author"]) for m in marks] == [
         ("scam", "tg", "777", str(ADMIN)), ("scam", "mel", "555", str(ADMIN)), ("unban", "tg", "777", str(ADMIN))]
     # A wrong argument type is explained, not executed.
