@@ -208,6 +208,7 @@ class AutosupModule(Module):
         words = ", ".join(f"«{w}»" for w in data.get("trigger") or [])
         reason = data.get("reason")
         trigger = (f"{words} — депозит и вывод в одном сообщении" if reason == "mixed"
+                   else f"код вывода {words} найден в базе кодов" if reason == "code"
                    else words if words else "нет за первую минуту")
         text = self.cfg().ticket_log_text.format(id=ticket_id, ticket=data["ticket"], player=player, account=account,
                                                  trigger=trigger)

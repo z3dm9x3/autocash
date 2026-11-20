@@ -91,6 +91,7 @@ modules:
     config:
       burst_s: 60                      # the first trigger within this minute types the ticket, none -> Q
       # rules: [...]                   # replaces ALL default C-ticket rules (TS_rules.DEFAULT_RULES)
+      # code_exclusions: [EPOS, Read, Cash]  # 4-char words that are never withdrawal codes (replaces the default list)
   # DRAFTS: the logic of kassa messages is not known yet, these modules are switched off.
   deposits:
     enabled: false

@@ -1,16 +1,26 @@
-"""TS: C-ticket rules on real phrases of players (Cash Monitor Dev, private dialogs, 2026-08..11)."""
+"""TS: C-ticket rules on real phrases of players (Cash Monitor Dev, private dialogs, 2026-08..11) and on
+real withdrawal codes of the [ВЫВОД] cards of the WW groups."""
 
 from __future__ import annotations
 
 import pytest
 
-from autocash.modules.ticket_system.TS_rules import DEFAULT_RULES, WW, D, Q, bare_code, compile_rules, decide, hits
+from autocash.modules.ticket_system.TS_rules import (
+    DEFAULT_RULES,
+    WW,
+    D,
+    Q,
+    code_candidates,
+    compile_rules,
+    decide,
+    hits,
+)
 
 RULES = compile_rules(DEFAULT_RULES)
 
 
 def ticket(text: str, media: str | None = None) -> str | None:
-    """The type one message gives a ticket, None when it fires nothing."""
+    """The type one message gives a ticket by its triggers, None when it fires nothing."""
     decided = decide(hits(text, media, RULES))
     return decided[0] if decided else None
 
@@ -26,6 +36,7 @@ def ticket(text: str, media: str | None = None) -> str | None:
     "Здравствуйте, я оплатил по выданным реквизитам.",
     "Переведите точную сумму\n430 рублей\n\nНажмите, чтобы скопировать!",
     "Заявка #1 275 260 создана.\nEPOS ID: 1349261\nНомер аккаунта: 1805366925",
+    "Ваша заявка отправлена на модерацию Время модерации может составлять до 30 минут",  # the deposit bot
 ])
 def test_deposit_words_in_any_form_make_a_d_ticket(text: str) -> None:
     assert ticket(text) == D
@@ -39,24 +50,35 @@ def test_a_pdf_alone_is_a_deposit() -> None:
 @pytest.mark.parametrize("text", [
     "Вывод не пришёл за 24 часа", "Здравствуйте, что с выводом?", "Я снял 1000 рублей", "выплата будет?",
     "Добрый день прошло 48 часов а вывод не поступил", "не могу вывести деньги", "Вывод с аккаунта 113 465 895 tfVQ",
-    "tfVQ", "1 758 918 313 / rywT", "5AKW", "Вывод завис",
+    "Вывод завис", "мне на карту не пришли деньги", "Когда придут деньги на карту?", "Номер карты нужен?",
+    "где мой выигрыш", "Выигрыш не пришёл", "на карточку ничего", "Ваша заявка отправлена на модерацию",
+    "Введите название вашего Банка",
 ])
-def test_withdrawal_words_and_bare_codes_make_a_ww_ticket(text: str) -> None:
+def test_withdrawal_words_make_a_ww_ticket(text: str) -> None:
     assert ticket(text) == WW
 
 
 @pytest.mark.parametrize("text", [
-    "Здравствуйте", "Привет", "?", "Ау", "Деньги не пришли", "Где деньги", "уже сутки жду", "Когда придут на карту",
-    "Завис", "У меня всё зависло", "Здравствуйте, ваш вопрос ещё актуален?", "Скиньте рабочую ссылку на сайт",
-    "Зачисление когда будет?", "Есть реквизиты на 500?", "сняла видео как просили", "Salam", "депутат", "департамент",
+    "Здравствуйте", "Привет", "?", "Ау", "Деньги не пришли", "Где деньги", "уже сутки жду", "Завис",
+    "У меня всё зависло", "Здравствуйте, ваш вопрос ещё актуален?", "Скиньте рабочую ссылку на сайт",
+    "Зачисление когда будет?", "Есть реквизиты на 500?", "сняла видео как просили", "Salam", "депутат",
+    "департамент", "картинка не грузится", "tfVQ", "1 758 918 313 / rywT", "Я отправил деньги обратно, с меня сняли",
 ])
-def test_no_explicit_trigger_fires_nothing(text: str) -> None:
-    """"завис", "сутки", "не пришли", "на карту", "зачисление", "реквизиты" are no triggers."""
+def test_no_trigger_fires_nothing(text: str) -> None:
+    """A bare code is not a trigger: it counts only if the base of withdrawal codes knows it (D-TS-5)."""
     assert ticket(text) is None
 
 
-def test_both_kinds_in_one_message_are_q() -> None:
-    assert decide(hits("пополнял через тг бота, как вывести деньги?", None, RULES)) == (Q, "mixed")
+@pytest.mark.parametrize("text", [
+    "пополнял через тг бота, как вывести деньги?",
+    "Пополняла баланс по номеру карты",  # signs of D and W: definitely Q
+    "Случайно на карту 2 раза сделала перевод, для пополнения",
+])
+def test_signs_of_both_in_one_message_are_q(text: str) -> None:
+    assert decide(hits(text, None, RULES)) == (Q, "mixed")
+
+
+def test_a_pdf_with_a_withdrawal_word_is_q() -> None:
     assert decide(hits("Не приходит вывод", "pdf", RULES)) == (Q, "mixed")
 
 
@@ -69,15 +91,34 @@ def test_the_bot_withdrawal_guide_is_not_a_deposit() -> None:
 def test_the_fragment_is_what_fired() -> None:
     assert [h.fragment for h in hits("Не пришёл деп, пополнила вчера", None, RULES)] == ["пополнила", "деп"]
     assert [h.fragment for h in hits("", "pdf", RULES)] == ["PDF"]
-    assert [(h.rule, h.fragment) for h in hits("tfVQ", None, RULES)] == [("w.code", "tfVQ")]
+    assert [h.fragment for h in hits("на карту не пришло", None, RULES)] == ["карту"]
 
 
-def test_bare_codes() -> None:
-    assert bare_code("M9mp") == "M9mp" and bare_code("yzdm") == "yzdm" and bare_code("ID 1773590121 / 5kth") == "5kth"
-    assert bare_code("EPOS") is None and bare_code("Cash") is None
-    assert bare_code("код tfVQ пришёл") is None  # Cyrillic: a sentence, the word rules decide
-    assert bare_code("7063832") is None  # an SMS code: digits only
-    assert bare_code("hello there my friend") is None
+# Real codes of [ВЫВОД] cards (WW groups, Cash Monitor Dev): mixed case, upper, lower, with digits.
+REAL_CODES = ["9Bz7", "S2q3", "Q73Q", "y93N", "2Qcs", "hA3s", "UK2Q", "EyMg", "u62P", "91B4", "vygG", "Xn1T",
+              "jjEm", "e2nT", "UfwN", "HCXY", "itpC", "5nEb", "Rcrw", "XqbD", "n8yp", "1WM4", "FzPs", "cLh8",
+              "TJXC", "wyci", "jdaa", "Tszx"]
+
+
+@pytest.mark.parametrize("code", REAL_CODES)
+def test_real_codes_are_candidates(code: str) -> None:
+    assert code_candidates(code) == [code]
+    assert code_candidates(f"Здравствуйте, вывод {code} не пришёл") == [code]
+    assert code_candidates(f"ID 1773590121 / {code}") == [code]
+
+
+@pytest.mark.parametrize("text", [
+    "EPOS ID: 1349261", "Read", "Cash", "Queen Cash", "Fast", "998p",  # excluded words; 3 digits in a row
+    "1234", "7063832",  # digits only: an SMS code, not a withdrawal code
+    "abcde", "abc", "@user1", "#ab12", "file.pdf1", "https://x.ru/ab12", "ab12cd", "привет",
+])
+def test_not_candidates(text: str) -> None:
+    assert code_candidates(text) == []
+
+
+def test_candidates_keep_the_case_the_order_and_no_repeats() -> None:
+    assert code_candidates("M9mp / U7RY / M9mp") == ["M9mp", "U7RY"]
+    assert code_candidates("код tfVQ", ["tfvq"]) == []  # the exclusions are case-insensitive
 
 
 def test_rules_from_the_configuration_replace_the_defaults() -> None:

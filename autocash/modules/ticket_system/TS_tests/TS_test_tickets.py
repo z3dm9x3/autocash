@@ -12,6 +12,7 @@ from autocash.core.app import App
 from autocash.modules.autosup.AS_module import AutosupModule
 from autocash.modules.role_manager import RM_store
 from autocash.modules.role_manager.RM_module import RoleManagerModule
+from autocash.modules.ticket_system import TS_codes
 from autocash.modules.ticket_system.TS_module import TicketSystemModule
 from tests.conftest import ACCOUNT, LOGS, AppFactory
 from tests.fake_telegram.server import FakeTelegram
@@ -152,3 +153,54 @@ async def test_messages_written_before_ts_started_make_no_tickets(app_factory: A
     await app.protocols.run_pending()
     assert await tickets(app, P1) == []
     assert len(logs(fake)) == 1 and f"игрок {P2}" in logs(fake)[0]
+
+
+async def test_a_code_from_the_base_of_codes_makes_ww(app_factory: AppFactory, fake: FakeTelegram,
+                                                     cfg: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    """D-TS-5: a code the base knows types the ticket WW at once, even without a withdrawal word."""
+    async def known(conn: Any, codes: Any) -> str | None:
+        return "tfVQ" if "tfVQ" in codes else None
+
+    monkeypatch.setattr(TS_codes, "find", known)
+    app = await ts_app(app_factory, fake, cfg)
+    fake.post(P1, P1, "Здравствуйте, tfVQ")
+    await wait_for(lambda: typed(app, P1), timeout=10, what="C-ticket by the code")
+    assert [(r["ticket"], r["reason"], r["trigger_text"]) for r in await tickets(app, P1)] == [("WW", "code", "tfVQ")]
+    await wait_for(lambda: logs(fake), what="the record in logs")
+    assert logs(fake)[0].endswith("· триггер: код вывода «tfVQ» найден в базе кодов")
+
+
+async def test_a_code_the_base_does_not_know_leaves_it_to_the_triggers(app_factory: AppFactory, fake: FakeTelegram,
+                                                                      cfg: dict[str, Any]) -> None:
+    """The base is a stub now: a code is never found, the triggers decide; no trigger in the minute -> Q."""
+    cfg["modules"]["ticket_system"]["config"]["burst_s"] = 3.0
+    app = await ts_app(app_factory, fake, cfg)
+    fake.post(P1, P1, "1 758 918 313 / rywT")  # a code alone: not found, no trigger
+    fake.post(P2, P2, "wp8s")
+    fake.post(P2, P2, "пополнил вчера")  # a code not found, then a deposit word -> D
+    await wait_for(lambda: typed(app, P2), timeout=10, what="C-ticket P2")
+    await wait_for(lambda: typed(app, P1), what="Q after the minute")
+    assert [(r["ticket"], r["reason"]) for r in await tickets(app, P1)] == [("Q", "none")]
+    assert [(r["ticket"], r["trigger_text"]) for r in await tickets(app, P2)] == [("D", "пополнил")]
+    codes = [list(r["codes"]) for r in await app.db.pool.fetch(
+        "SELECT m.codes FROM ts_ticket_messages m JOIN ts_tickets t ON t.id = m.ticket_id "
+        "WHERE t.tg_id = ANY($1::bigint[]) ORDER BY m.msg_date, m.msg_id", [P1, P2])]
+    assert sorted(codes) == [[], ["rywT"], ["wp8s"]]
+
+
+async def test_a_typed_ticket_is_not_searched_any_more(app_factory: AppFactory, fake: FakeTelegram,
+                                                       cfg: dict[str, Any]) -> None:
+    app = await ts_app(app_factory, fake, cfg)
+    fake.post(P1, P1, "Не пришёл депозит")
+    await wait_for(lambda: typed(app, P1), timeout=10, what="C-ticket")
+    fake.post(P1, P1, "и вывод тоже, код tfVQ")
+    await wait_for(lambda: _messages(app, P1, 2), what="the second message in the ticket")
+    rows = await app.db.pool.fetch("SELECT d_rules, w_rules, codes FROM ts_ticket_messages m JOIN ts_tickets t "
+                                   "ON t.id = m.ticket_id WHERE t.tg_id = $1 ORDER BY m.msg_id", P1)
+    assert [(list(r["d_rules"]), list(r["w_rules"]), list(r["codes"])) for r in rows] == [
+        (["d.deposit"], [], []), ([], [], [])]  # after D nothing is looked for
+    assert [r["ticket"] for r in await tickets(app, P1)] == ["D"]
+
+
+async def _messages(app: App, tg_id: int, n: int) -> bool:
+    return any(r["messages"] >= n for r in await tickets(app, tg_id))

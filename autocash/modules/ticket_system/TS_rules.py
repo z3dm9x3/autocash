@@ -1,13 +1,19 @@
-"""TS: the triggers of C-ticket - what makes a ticket D (deposit) or WW (withdrawal) (TS_readme.md, D-TS-2).
+"""TS: what C-ticket looks for in a player's message (TS_readme.md, knowledge/tickets/00_c_ticket.md).
 
-Explicit words only, in any form:
+Triggers - explicit words in any form:
 - D: пополнил/пополнение/попалнил, депозит/дипозит, деп/депнул/задепал, закинул, на игру, чек/квитанция,
   оплатил, перевёл, платёж; a PDF; a forwarded message of the kassa bot about a deposit;
-- WW: вывод/вывел/вывести, снял (not "снял видео"), выплата, "отправлена на модерацию", a bare withdrawal code.
-Not triggers - they come in deposits and withdrawals alike: "завис", "сутки", "деньги не пришли", "на карту",
-"зачисление", "реквизиты" (checked on 3 136 real appeals of Cash Monitor Dev, 2026-11-19).
-The rules are configuration (P-2): `modules.ticket_system.config.rules`; these are the defaults.
-Expressions run in re2 (A-7) on the normalized text: lower case, "ё" -> "е".
+- WW: вывод/вывел/вывести, выплата, выигрыш, карта (customer: «однозначно выводы»), снял (not "снял видео",
+  not "с меня сняли"), forwarded messages of the withdrawal bot.
+Not triggers - they come in deposits and withdrawals alike: "завис", "сутки", "деньги не пришли", "зачисление",
+"реквизиты" (checked on 3 136 real appeals of Cash Monitor Dev, 2026-11-19).
+
+Withdrawal code candidates (D-TS-5): a whole token of exactly 4 latin letters/digits with at least one letter,
+without 3 digits in a row, not an excluded word (EPOS, Read, Cash ...). A candidate is only a candidate: TS
+checks it against the base of withdrawal codes (TS_codes); only a code found there makes the ticket WW.
+
+The rules and exclusions are configuration (P-2): `modules.ticket_system.config.rules` / `.code_exclusions`;
+these are the defaults. Expressions run in re2 (A-7) on the normalized text: lower case, "ё" -> "е".
 """
 
 from __future__ import annotations
@@ -37,6 +43,8 @@ class RuleCfg(BaseModel):
     unless: str | None = None  # re2: the rule does not fire if the same message matches this
 
 
+_DEPOSIT_BOT_MODERATION = "время\\s+модерации\\s+может\\s+составлять"  # the deposit bot; the withdrawal one is short
+
 DEFAULT_RULES: list[dict[str, Any]] = [
     # ---- deposit -------------------------------------------------------------------------------
     {"name": "d.popoln", "kind": D, "pattern": "п[оа]п[оа]лн[а-я]*"},  # пополнил, пополнение, попалнил
@@ -53,21 +61,28 @@ DEFAULT_RULES: list[dict[str, Any]] = [
     {"name": "d.pdf", "kind": D, "media": ["pdf"]},
     {"name": "d.bot", "kind": D,  # forwarded messages of the kassa bot about a deposit
      "pattern": "переведите\\s+точную\\s+сумму|заявка\\s*#?\\s*[\\d ]+\\s*создана|epos\\s*id|"
-                "реквизиты\\s+для\\s+оплаты|метод\\s+пополнения|ожидание\\s+реквизитов"},
+                "реквизиты\\s+для\\s+оплаты|метод\\s+пополнения|ожидание\\s+реквизитов|" + _DEPOSIT_BOT_MODERATION},
     # ---- withdrawal ----------------------------------------------------------------------------
     {"name": "w.vyvod", "kind": WW, "pattern": "вывод[а-я]*|вывел[а-я]*|вывест[а-я]*|вывед[а-я]*"},
-    {"name": "w.snyal", "kind": WW, "pattern": "снял[а-я]*|снять|сняти[а-я]*|сниму",
-     "unless": "видео|скрин|запис"},  # "снял видео" is the deposit check, not a withdrawal
     {"name": "w.vyplata", "kind": WW, "pattern": "выплат[а-я]*"},
-    {"name": "w.bot", "kind": WW, "pattern": "отправлена\\s+на\\s+модерацию"},
+    {"name": "w.vyigrysh", "kind": WW, "pattern": "выигр[ыи]ш[а-я]*"},  # выигрыш, выигрыша
+    {"name": "w.karta", "kind": WW,  # карта, карту, карты, картой, карточка - not картинка
+     "pattern": _word("карт(?:а|у|ы|е|ой|ою|ам|ами|ах|очк[а-я]*)?")},
+    {"name": "w.snyal", "kind": WW, "pattern": "снял[а-я]*|снять|сняти[а-я]*|сниму",
+     "unless": "видео|скрин|запис|с\\s+меня\\s+сняли"},  # "снял видео" is the deposit check; "с меня сняли" a debit
+    {"name": "w.bot", "kind": WW,  # forwarded messages of the withdrawal bot
+     "pattern": "отправлена\\s+на\\s+модерацию|название\\s+(?:вашего\\s+)?банка", "unless": _DEPOSIT_BOT_MODERATION},
 ]
 
-# A bare withdrawal code: 4 latin letters/digits, with a letter, not one of these words.
-CODE_STOPWORDS = frozenset(w.lower() for w in (
-    "EPOS", "Cash", "RAMZ", "USER", "Test", "1WIN", "call", "play", "apps", "Ozon", "Fast", "Bank", "Name", "will",
-    "card", "have", "with", "made", "Team", "GOLD", "that", "this", "okay", "what", "from", "your", "pay1", "Sber",
-    "Tink", "salam"))
-_CODE = re.compile(r"[A-Za-z0-9]{4}")
+# 4-character latin words that are not withdrawal codes (customer: explicit exclusions; compared case-insensitively).
+DEFAULT_CODE_EXCLUSIONS: list[str] = [
+    "EPOS", "Read", "Cash", "Fast", "RAMZ", "USER", "Test", "1WIN", "call", "play", "apps", "Ozon", "Bank", "Name",
+    "will", "card", "have", "with", "made", "Team", "GOLD", "that", "this", "okay", "what", "from", "your", "Sber",
+    "Tink", "RWMG", "help", "info", "link", "mail", "html", "http", "free", "good", "nice", "year", "time",
+    "amma", "edin", "etmi", "niye", "edir", "mene", "pulu", "saat", "kimi", "geri", "oldu", "edib", "eden",
+]
+# A whole token: not glued to letters, digits, "_", "@", "#", "/", "." (usernames, links, file names).
+_CANDIDATE = re.compile(r"(?<![A-Za-z0-9_@#/.\-])([A-Za-z0-9]{4})(?![A-Za-z0-9_@/\-]|\.[A-Za-z0-9])")
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,28 +116,23 @@ def normalize(text: str) -> str:
     return (text or "").lower().replace("ё", "е")
 
 
-def bare_code(text: str) -> str | None:
-    """A message that is only a withdrawal code ("tfVQ", "5AKW"), maybe next to an ID ("1 758 918 313 / rywT").
+def code_candidates(text: str, exclusions: Iterable[str] = DEFAULT_CODE_EXCLUSIONS) -> list[str]:
+    """Tokens of the message that may be withdrawal codes, as written (case matters), in order, without repeats.
 
-    No Cyrillic in the message (a code comes alone, not inside a sentence); a token of letters only is a code
-    when it is mixed-case ("tfVQ") or the whole message ("yzdm").
+    Exactly 4 latin letters/digits, at least one letter, no 3 digits in a row ("998p" is not a code),
+    not an excluded word. Letters only are fine ("yzdm").
     """
-    if re.search(r"[а-яёА-ЯЁ]", text or ""):
-        return None
-    words = [w for w in re.split(r"[\s/,;:|]+", (text or "").strip()) if w]
-    if not 1 <= len(words) <= 5:
-        return None
-    for w in words:
-        if not _CODE.fullmatch(w) or not re.search(r"[A-Za-z]", w) or w.lower() in CODE_STOPWORDS:
-            continue
-        mixed = bool(re.search(r"\d", w)) or (bool(re.search(r"[a-z]", w)) and bool(re.search(r"[A-Z]", w)))
-        if mixed or len(words) == 1:
-            return w
-    return None
+    excluded = {w.lower() for w in exclusions}
+    out: list[str] = []
+    for token in _CANDIDATE.findall(text or ""):
+        if (re.search(r"[A-Za-z]", token) and not re.search(r"\d{3}", token)
+                and token.lower() not in excluded and token not in out):
+            out.append(token)
+    return out
 
 
 def hits(text: str, media_type: str | None, rules: list[CompiledRule]) -> list[Hit]:
-    """Everything one message fires, in the order of the rules; a bare withdrawal code is the rule w.code."""
+    """The triggers one message fires, in the order of the rules."""
     norm = normalize(text)
     media = (media_type or "").lower()
     out: list[Hit] = []
@@ -135,16 +145,13 @@ def hits(text: str, media_type: str | None, rules: list[CompiledRule]) -> list[H
         found = rule.rx.search(norm) if rule.rx is not None and norm else None
         if found:
             out.append(Hit(rule.name, rule.kind, re.sub(rf"^[^{_LETTER}]+|[^{_LETTER}]+$", "", found.group(0))))
-    code = bare_code(text)
-    if code is not None:
-        out.append(Hit("w.code", WW, code))
     return out
 
 
 def decide(message_hits: list[Hit]) -> tuple[str, str] | None:
     """The type a message gives a ticket: (ticket, reason), or None when it fires nothing.
 
-    Only D rules -> D; only WW -> WW; both kinds in one message -> Q (mixed): the player has to be asked.
+    Only D triggers -> D; only WW -> WW; signs of both in one message -> Q (mixed), definitely.
     """
     kinds = {h.kind for h in message_hits}
     if not kinds:
