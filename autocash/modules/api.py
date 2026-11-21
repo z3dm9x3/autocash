@@ -140,6 +140,8 @@ class Module(ABC):
     commands: ClassVar[list[str]] = []
     # Commands also accepted from groups that are not read (policy presence/meta), e.g. /rm ? (D-RM-4).
     commands_any_chat: ClassVar[list[str]] = []
+    # Commands accepted in the staff group `logs`, which is otherwise never read (FT-2.4, D-ORDERS-6).
+    commands_logs_chat: ClassVar[list[str]] = []
     # Every message of private dialogs, whatever its type (also untyped): Role Manager (D-RM-11).
     private_dialogs: ClassVar[bool] = False
     # Protocols this module takes part in (D-RM-12); it gets them in `on_protocol`.

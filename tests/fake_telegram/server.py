@@ -52,6 +52,7 @@ class FakeChat:
     title: str
     members: set[int] = field(default_factory=set)
     readonly: set[int] = field(default_factory=set)
+    admins: set[int] = field(default_factory=set)  # accounts that may delete messages of others
     next_id: int = 1
     pts: int = 0
     log: list[tuple[int, str, FakeMessage]] = field(default_factory=list)  # (pts, kind, message)
@@ -64,6 +65,7 @@ class FakeTelegram:
         self.clients: dict[int, FakeClient] = {}
         self.sent: list[tuple[int, int, str, int]] = []  # (account_id, chat_id, text, msg_id)
         self.pins: list[tuple[int, int, int]] = []  # (account_id, chat_id, msg_id)
+        self.deletes: list[tuple[int, int, int]] = []  # (account_id, chat_id, msg_id) actually deleted
         self.random_ids: dict[tuple[int, int], int] = {}
         # account -> queued failures: (method or None for any call, exception)
         self.failures: dict[int, deque[tuple[str | None, Exception]]] = defaultdict(deque)
@@ -225,6 +227,24 @@ class FakeTelegram:
             raise TelegramError("MESSAGE_ID_INVALID")
         self.pins.append((account_id, chat_id, msg_id))
 
+    def delete_messages(self, account_id: int, chat_id: int, msg_ids: list[int]) -> int:
+        """Own messages, or any message for an admin of the chat; a message of another without the right:
+        MESSAGE_DELETE_FORBIDDEN; a message that is gone counts 0."""
+        self._api_call(account_id, "delete")
+        chat = self.chats.get(chat_id)
+        if chat is None or account_id not in chat.members:
+            raise TelegramError("CHANNEL_PRIVATE")
+        count = 0
+        for msg in chat.messages:
+            if msg.deleted or msg.id_for(account_id) not in msg_ids:
+                continue
+            if msg.sender_id != account_id and account_id not in chat.admins:
+                raise TelegramError("MESSAGE_DELETE_FORBIDDEN")
+            self.delete(msg)
+            self.deletes.append((account_id, chat_id, msg.id_for(account_id)))
+            count += 1
+        return count
+
     def messages(self, account_id: int, chat_id: int, ids: list[int]) -> list[RawEvent]:
         self._api_call(account_id, "getMessages")
         chat = self.chats.get(chat_id)
@@ -314,6 +334,10 @@ class FakeClient:
     async def pin_message(self, chat_id: int, msg_id: int) -> None:
         await asyncio.sleep(0)
         self.server.pin(self.account_id, chat_id, msg_id)
+
+    async def delete_messages(self, chat_id: int, msg_ids: list[int]) -> int:
+        await asyncio.sleep(0)
+        return self.server.delete_messages(self.account_id, chat_id, msg_ids)
 
     async def get_dialogs(self) -> list[DialogInfo]:
         await asyncio.sleep(0)

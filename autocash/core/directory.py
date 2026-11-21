@@ -110,6 +110,12 @@ class Directory:
         self.users[tg_id] = role
         self._changed()
 
+    def set_users(self, users: dict[int, str]) -> None:
+        """Many users at once (the history of orders adds thousands): one snapshot write."""
+        if users:
+            self.users.update(users)
+            self._changed()
+
     def set_group(self, bare_id: int, role: str | None) -> None:
         if role is None:
             self.groups.pop(bare_id, None)

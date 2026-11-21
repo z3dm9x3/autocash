@@ -19,14 +19,16 @@ import asyncpg
 KINDS = ("command_reply", "client_reply", "notify", "bulk")
 DEFAULT_PRIORITY = 5
 KIND_PRIORITY = dict.fromkeys(KINDS, DEFAULT_PRIORITY)
-ACTIONS = ("send", "pin")
+ACTIONS = ("send", "pin", "delete")
 
 _INSERT = """
 INSERT INTO outbound_tasks (trace_id, parent_trace_id, dedup_key, module, rule, rule_version, kind, priority,
     chat_id, reply_to, text, random_id, queued_at, expires_at, config_version, dialog_account_id,
-    action, pin_msg_id, pin_after_send, target_type, binding)
+    action, pin_msg_id, pin_after_send, target_type, binding, target_msg_id, not_before, delete_after_s,
+    prefer_account_id)
 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(),
-        now() + make_interval(secs => $13::float8), $14, $15, $16, $17, $18, $19, $20)
+        now() + make_interval(secs => $13::float8), $14, $15, $16, $17, $18, $19, $20, $21,
+        CASE WHEN $22::float8 IS NULL THEN NULL ELSE now() + make_interval(secs => $22::float8) END, $23, $24)
 ON CONFLICT (dedup_key) DO NOTHING
 RETURNING id
 """
@@ -44,9 +46,14 @@ class OutboundDraft:
     # The account that must send the task. In a private dialog: the account of that dialog
     # (only it may answer there, FT-9.4). Elsewhere: an account the module names explicitly.
     via_account: int | None = None
-    action: str = "send"  # send / pin
+    action: str = "send"  # send / pin / delete
     pin_msg_id: int | None = None  # action pin: the message to pin
     pin_after_send: bool = False  # send, then pin the sent message (a follow-up pin task)
+    target_msg_id: int | None = None  # action delete: the message to delete (D-OBX-8)
+    not_before_s: float | None = None  # the task is not routed earlier than this many seconds from now
+    delete_after_s: float | None = None  # send: delete the sent message this long after delivery
+    # Unbound task: the account tried first (delete: the account that sent the message); others may follow.
+    prefer_account: int | None = None
     priority: int = DEFAULT_PRIORITY
     # Generated before sending and stored with the task (invariant 3).
     random_id: int = field(default_factory=lambda: secrets.randbits(63) or 1)
@@ -75,11 +82,16 @@ async def insert_outbound(
         raise ValueError(f"unknown outbound action {draft.action!r}")
     if draft.action == "pin" and draft.pin_msg_id is None:
         raise ValueError("an outbound pin needs pin_msg_id")
+    if draft.action == "delete" and draft.target_msg_id is None:
+        raise ValueError("an outbound delete needs target_msg_id")
     dedup = draft.dedup_key or f"{parent_trace_id}:{module}:{draft.rule}"
+    # A task that waits for its time lives that much longer (its TTL counts from not_before).
+    ttl_s += draft.not_before_s or 0.0
     task_id: int | None = await conn.fetchval(
         _INSERT, draft.trace_id, parent_trace_id, dedup, module, draft.rule, draft.rule_version, draft.kind,
         draft.priority, draft.chat_id, draft.reply_to, draft.text, draft.random_id, ttl_s,
         config_version, draft.via_account, draft.action, draft.pin_msg_id, draft.pin_after_send,
-        "user" if draft.chat_id > 0 else "group", draft.binding,
+        "user" if draft.chat_id > 0 else "group", draft.binding, draft.target_msg_id, draft.not_before_s,
+        draft.delete_after_s, draft.prefer_account,
     )
     return task_id

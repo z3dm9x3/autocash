@@ -1,9 +1,9 @@
-"""PL: the module "players" - one person behind many TGIDs and MelIDs (PL_readme.md, D-PL-1..4).
+"""players: the module "players" - one person behind many TGIDs and MelIDs (players_readme.md, D-PLAYERS-1..4).
 
 Pairs TGID <-> MelID come from two places:
 - typed messages carrying both fields `tgid` and `mel_id` (kassa cards: deposit.*, withdrawal.*, player.*);
-- other modules calling PL_store.add_link directly (Autosup: the ID a user sent in private).
-A pair whose TGID is staff (RM role) or a cashier (card field user_type = CASHIER) is kept as a staff link
+- other modules calling players_store.add_link directly (Autosup: the ID a user sent in private).
+A pair whose TGID is staff (RM role) or a cashier (card field user_type CASHIER, ADMIN) is kept as a staff link
 and joins nothing: staff create deposits for many players.
 """
 
@@ -21,12 +21,12 @@ from autocash.core.commands.rights import can_run, deny
 from autocash.core.reactions.engine import register_action
 from autocash.core.trace.codes import Reason, Status
 from autocash.modules.api import Context, EntityDecl, Event, Module, Services
-from autocash.modules.players import PL_store
+from autocash.modules.players import players_store
 
 log = logging.getLogger(__name__)
 
 NAME = "players"
-PREFIX = "PL"
+PREFIX = "players"
 COMMANDS = ("player", "player_deposits", "unlink", "relink")
 STAFF = frozenset({"casher", "support", "manager", "admin", "dev"})  # RM roles whose pairs join nothing
 
@@ -34,16 +34,17 @@ STAFF = frozenset({"casher", "support", "manager", "admin", "dev"})  # RM roles 
 class PlayersConfig(BaseModel):
     deposits_days: int = 30
     # Card values of «Тип пользователя» that mark a cashier creating a deposit for a player.
-    staff_user_types: list[str] = ["CASHIER"]
+    staff_user_types: list[str] = ["CASHIER", "ADMIN"]
     card_links: int = 40  # links listed in /player at most
 
 
 class PlayersModule(Module):
     name: ClassVar[str] = NAME
-    migrations: ClassVar[Path | None] = Path(__file__).parent / "PL_migrations"
+    migrations: ClassVar[Path | None] = Path(__file__).parent / "players_migrations"
     subscriptions: ClassVar[list[str]] = ["deposit.*", "withdrawal.*", "player.*",
                                           *(f"command.{c}" for c in COMMANDS)]
-    entities: ClassVar[list[EntityDecl]] = [EntityDecl("player", "pl_players, pl_links, pl_nodes, pl_journal")]
+    entities: ClassVar[list[EntityDecl]] = [
+        EntityDecl("player", "players, players_links, players_nodes, players_journal")]
     commands: ClassVar[list[str]] = list(COMMANDS)
     config_model: ClassVar[type[BaseModel] | None] = PlayersConfig
     # Joins are serialized by an advisory lock anyway; one worker keeps them in arrival order.
@@ -57,7 +58,7 @@ class PlayersModule(Module):
 
     async def start(self) -> None:
         assert self.services is not None
-        healed = await PL_store.heal(self.services.db.pool)
+        healed = await players_store.heal(self.services.db.pool)
         if healed:
             log.info("%s: %d links got their players at start", PREFIX, healed)
 
@@ -68,12 +69,12 @@ class PlayersModule(Module):
         """{ident} -> {status: one | ambiguous | none, player_id, ident: "kind:value", players}."""
         assert self.services is not None
         arg = str(p.get("ident") or "").strip()
-        found = await PL_store.resolve(self.services.db.pool, arg)
+        found = await players_store.resolve(self.services.db.pool, arg)
         if found.ambiguous:
             return {"status": "ambiguous", "players": found.ambiguous, "ident": arg}
         if found.player_id is None:
             kind, sep, _ = arg.partition(":")
-            ident = arg if sep and kind in PL_store.KINDS else f"tg:{arg}"
+            ident = arg if sep and kind in players_store.KINDS else f"tg:{arg}"
             return {"status": "none", "ident": ident}
         return {"status": "one", "player_id": found.player_id, "ident": f"{found.kind}:{found.value}"}
 
@@ -85,7 +86,7 @@ class PlayersModule(Module):
             kind, value = "tg", kind
         event = data.get("event", {})
         async with self.services.db.pool.acquire() as conn:
-            return await PL_store.add_mark(conn, str(p["kind"]), kind, value, author=str(event.get("sender_id")),
+            return await players_store.add_mark(conn, str(p["kind"]), kind, value, author=str(event.get("sender_id")),
                                            text=p.get("text"), trace_id=event.get("trace_id"))
 
     async def handle(self, event: Event, ctx: Context) -> None:
@@ -98,13 +99,13 @@ class PlayersModule(Module):
         pool = self.services.db.pool
         if tgid.isdigit() and (f.get("username") or f.get("name")):
             async with pool.acquire() as conn:
-                await PL_store.note_name(conn, int(tgid), f.get("username"), f.get("name"))
+                await players_store.note_name(conn, int(tgid), f.get("username"), f.get("name"))
         if not (tgid.isdigit() and mel_id):
             return
         cfg = self.cfg(ctx)
         role = self.services.runtime().directory.user_role(int(tgid))
         staff = role in STAFF or str(f.get("user_type") or "").upper() in cfg.staff_user_types
-        await PL_store.add_link(pool, int(tgid), mel_id, source=f"msg:{event.msg_type}", ref=event.trace_id,
+        await players_store.add_link(pool, int(tgid), mel_id, source=f"msg:{event.msg_type}", ref=event.trace_id,
                                 staff=staff, at=datetime.fromtimestamp(event.record.msg_date, UTC))
 
     # ---- commands ----------------------------------------------------------------------------------
@@ -131,14 +132,14 @@ class PlayersModule(Module):
             return await self._set_link(name, args, author)
         if not args:
             raise ValueError(f"Формат: /{name} <TGID | MelID | tg:… | mel:… | #игрок>")
-        found = await PL_store.resolve(self.services.db.reports, args[0])
+        found = await players_store.resolve(self.services.db.reports, args[0])
         if found.ambiguous:
             # FT-12.5: two different players under the same number - ask which one is meant.
             return (f"«{args[0]}» есть у нескольких игроков (#{', #'.join(map(str, found.ambiguous))}). "
                     f"Уточните: tg:{args[0]} или mel:{args[0]}")
         if found.player_id is None:
             return f"Игрок «{args[0]}» не найден."
-        ids = await PL_store.idents(self.services.db.reports, found.player_id)
+        ids = await players_store.idents(self.services.db.reports, found.player_id)
         if name == "player":
             return await self._card(found.player_id, ids, cfg)
         days = int(args[1]) if len(args) > 1 and args[1].isdigit() else cfg.deposits_days
@@ -159,13 +160,13 @@ class PlayersModule(Module):
             raise ValueError(f"Формат: /{name} <TGID> <MelID>")
         tg_id, mel_id = int(args[0]), args[1]
         state = "disabled" if name == "unlink" else "active"
-        result = await PL_store.set_state(self.services.db.pool, tg_id, mel_id, state, author=author)
+        result = await players_store.set_state(self.services.db.pool, tg_id, mel_id, state, author=author)
         if result == "missing":
             return f"Связи TGID {tg_id} — MelID {mel_id} нет."
         if result == "same":
             return f"Связь TGID {tg_id} — MelID {mel_id} уже {'разорвана' if state == 'disabled' else 'активна'}."
-        pt = await PL_store.player_of(self.services.db.pool, "tg", tg_id)
-        pm = await PL_store.player_of(self.services.db.pool, "mel", mel_id)
+        pt = await players_store.player_of(self.services.db.pool, "tg", tg_id)
+        pm = await players_store.player_of(self.services.db.pool, "mel", mel_id)
         where = (f"игрок #{pt}" if pt == pm else
                  f"TGID — игрок #{pt or '—'}, MelID — игрок #{pm or '—'}")
         verb = "разорвана" if state == "disabled" else "восстановлена"
@@ -176,11 +177,11 @@ class PlayersModule(Module):
         assert self.services is not None
         db = self.services.db.reports
         tgs = [int(t) for t in ids["tg"]]
-        names = await db.fetch("SELECT DISTINCT username, name FROM pl_names WHERE tg_id = ANY($1::bigint[])", tgs)
+        names = await db.fetch("SELECT DISTINCT username, name FROM players_names WHERE tg_id = ANY($1::bigint[])", tgs)
         marks = await db.fetch(
-            "SELECT kind, author, created_at, text FROM pl_marks WHERE (ident_kind = 'tg' AND ident = ANY($1)) "
+            "SELECT kind, author, created_at, text FROM players_marks WHERE (ident_kind = 'tg' AND ident = ANY($1)) "
             "OR (ident_kind = 'mel' AND ident = ANY($2)) ORDER BY created_at DESC LIMIT 20", ids["tg"], ids["mel"])
-        links = await PL_store.links_of(db, tgs, ids["mel"])
+        links = await players_store.links_of(db, tgs, ids["mel"])
         lines = [f"Игрок #{player_id}: TGID {len(ids['tg'])}, MelID {len(ids['mel'])}",
                  f"TGID: {_short(ids['tg'])}", f"MelID: {_short(ids['mel'])}"]
         if names:

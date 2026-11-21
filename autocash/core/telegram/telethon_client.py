@@ -322,6 +322,13 @@ class TelethonClient:
     async def _pin(self, chat_id: int, msg_id: int) -> Any:
         return await self._client.pin_message(await self._peer(chat_id), msg_id, notify=False, pm_oneside=False)
 
+    async def delete_messages(self, chat_id: int, msg_ids: list[int]) -> int:
+        result = await self._call("messages.deleteMessages", self._delete(chat_id, msg_ids))
+        return sum(int(getattr(r, "pts_count", 0) or 0) for r in (result or []))
+
+    async def _delete(self, chat_id: int, msg_ids: list[int]) -> Any:
+        return await self._client.delete_messages(await self._peer(chat_id), msg_ids, revoke=True)
+
     async def get_dialogs(self) -> list[DialogInfo]:
         if self.kind == "bot":
             return []  # Telegram gives bots no dialog list

@@ -39,6 +39,8 @@ class Reason(StrEnum):
     UNKNOWN_TYPE = "UNKNOWN_TYPE"
     ACCESS_DENIED = "ACCESS_DENIED"  # amendment to the TZ, see AGENTS.md
     CANCELLED_BY_USER = "CANCELLED_BY_USER"  # /cancel (stage 1c, docs/decisions.md D-1c-4)
+    SCHEDULED = "SCHEDULED"  # an outbound task waits for its not_before (D-OBX-8)
+    DELETE_FAILED = "DELETE_FAILED"  # no account of the pool could delete the message (D-OBX-8)
 
 
 # code -> (meaning, typical status); seeded into the reason_codes table.
@@ -58,4 +60,6 @@ REASONS: dict[Reason, tuple[str, str]] = {
     Reason.UNKNOWN_TYPE: ("сообщение без подходящего правила", "skipped"),
     Reason.ACCESS_DENIED: ("недостаточно прав", "cancelled"),
     Reason.CANCELLED_BY_USER: ("отменено командой оператора", "cancelled"),
+    Reason.SCHEDULED: ("задача ждёт своего времени (not_before)", "waiting"),
+    Reason.DELETE_FAILED: ("сообщение не удалось удалить ни с одного аккаунта", "not_delivered"),
 }

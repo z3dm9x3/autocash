@@ -1,12 +1,15 @@
 # The separate PostgreSQL server of Autocash on a Windows dev machine (D-RM-9).
 # It is NOT the PostgreSQL of other projects: own data directory, own port (5434), own password.
 #
-#   .\deploy\windows\autocash-pg.ps1 start|stop|status [-DataDir <path>]
+#   .\deploy\windows\autocash-pg.ps1 start|stop|status|dblink [-DataDir <path>]
+#
+# dblink: installs the extension dblink into the database of Autocash, as the superuser postgres (once;
+# the module orders reads the history of Cash Monitor Dev through it, D-ORDERS-2). The app user may not.
 #
 # The server is started detached (a hidden window): a server started from a console that closes
 # dies with it (Windows error 0xC0000142). Secrets: "Documents\AutoCash Secrets\pg.env", never in git.
 param(
-    [Parameter(Mandatory = $true, Position = 0)][ValidateSet("start", "stop", "status")][string]$Action,
+    [Parameter(Mandatory = $true, Position = 0)][ValidateSet("start", "stop", "status", "dblink")][string]$Action,
     [string]$DataDir = (Join-Path $env:USERPROFILE "Documents\AutoCash Data\pg"),
     [string]$PgBin = "C:\Program Files\PostgreSQL\17\bin",
     [int]$Port = 5434
@@ -34,5 +37,21 @@ switch ($Action) {
     "status" {
         & $pgctl -D $data status
         if (Test-Listening) { Write-Output "listening on 127.0.0.1:$Port" }
+    }
+    "dblink" {
+        $envFile = Join-Path $env:USERPROFILE "Documents\AutoCash Secrets\pg.env"
+        $lines = Get-Content $envFile
+        $dsn = ($lines | Where-Object { $_ -like "AUTOCASH_PG_DSN=*" }) -replace "^AUTOCASH_PG_DSN=", ""
+        $su = ($lines | Where-Object { $_ -like "AUTOCASH_PG_SUPERUSER_PASSWORD=*" }) -replace "^AUTOCASH_PG_SUPERUSER_PASSWORD=", ""
+        if (-not $dsn -or -not $su) { throw "AUTOCASH_PG_DSN or AUTOCASH_PG_SUPERUSER_PASSWORD not found in $envFile" }
+        if ($dsn -notmatch "/([^/?]+)(\?|$)") { throw "no database name in AUTOCASH_PG_DSN" }
+        $db = $Matches[1]
+        $env:PGPASSWORD = $su
+        try {
+            & (Join-Path $PgBin "psql.exe") -X -q -h 127.0.0.1 -p $Port -U postgres -d $db -v ON_ERROR_STOP=1 `
+                -c "CREATE EXTENSION IF NOT EXISTS dblink" -c "SELECT 'dblink ' || extversion FROM pg_extension WHERE extname = 'dblink'"
+        } finally {
+            Remove-Item Env:PGPASSWORD
+        }
     }
 }

@@ -1,1 +1,1 @@
-"""PL: players - one person behind many TGIDs and MelIDs. Read PL_readme.md first."""
+"""players: players - one person behind many TGIDs and MelIDs. Read players_readme.md first."""

@@ -14,11 +14,11 @@ D-TS-1…D-TS-3): Autosup передаёт ему каждое личное со
 | сообщение пользователя, пока Autosup ждёт ID | первое сообщение с ID: записать игрока и закрепить сообщение. Сообщения без ID ожидание не прерывают |
 
 Когда ID получен:
-1. Players: пара TGID — MelID в граф игроков (`PL_store.add_link`, источник `autosup`).
+1. Players: пара TGID — MelID в граф игроков (`players_store.add_link`, источник `autosup`).
 2. ID без пробелов — закрепляется сообщение пользователя.
 3. ID с пробелами (`123 456 789`) — Autosup отправляет его без пробелов (`123456789`) и закрепляет своё сообщение.
 
-Если MelID уже есть у игрока, пользователь присоединяется к нему: один человек, несколько аккаунтов. Если у пользователя уже был свой, другой игрок, два игрока склеиваются (D-PL-1), и в `logs` уходит запись об этом.
+Если MelID уже есть у игрока, пользователь присоединяется к нему: один человек, несколько аккаунтов. Если у пользователя уже был свой, другой игрок, два игрока склеиваются (D-PLAYERS-1), и в `logs` уходит запись об этом.
 
 Ожидание ID заканчивается через 7 дней (`expired`).
 
@@ -82,14 +82,14 @@ D-TS-1…D-TS-3): Autosup передаёт ему каждое личное со
 
 ## Таблица `as_dialogs` (`AS_migrations/001_as_dialogs.sql`)
 
-`tg_id`, `account_id`, `contact` (first/second), `state` (grace / awaiting_id / done / expired), `contact_at` (первое сообщение), `ask_at` (конец 60 секунд), `asked_at`, `expires_at`, `mel_id`, `found_in` (reply/history), `msg_id`, `player_id` (игрок на момент записи; текущий — `PL_store.current` или по `tg_id`).
+`tg_id`, `account_id`, `contact` (first/second), `state` (grace / awaiting_id / done / expired), `contact_at` (первое сообщение), `ask_at` (конец 60 секунд), `asked_at`, `expires_at`, `mel_id`, `found_in` (reply/history), `msg_id`, `player_id` (игрок на момент записи; текущий — `players_store.current` или по `tg_id`).
 
 `as_settings` — переключатель `/as on|off` (`AS_migrations/002_as_grace_switch.sql`).
 
 ## Зависимости (явные)
 
 - **Role Manager:** протоколы `contact.first` / `contact.second`; таблица `rm_users.username`; `SERVICE_USERS`.
-- **Players:** `PL_store.add_link`, `PL_store.mels_of_tg`. Модуль обязателен: без таблиц `pl_*` Autosup не стартует.
+- **Players:** `players_store.add_link`, `players_store.mels_of_tg`. Модуль обязателен: без таблиц `players_*` Autosup не стартует.
 - **Ticket System:** `TS_api.receive`, протоколы `ticket.d` / `ticket.ww` / `ticket.q`.
 - **Ядро:**
   - Outbox — `services.outbox`, действия `send` / `pin`;

@@ -20,8 +20,8 @@ from autocash.core.app import App
 from autocash.core.record import MessageRecord
 from autocash.modules.api import Context, Event
 from autocash.modules.deposits.module import DepositsModule
-from autocash.modules.players import PL_store
-from autocash.modules.players.PL_module import PlayersModule
+from autocash.modules.players import players_store
+from autocash.modules.players.players_module import PlayersModule
 from tests.conftest import BOT, CASHER, KASSA, KASSA2, LOGS, AppFactory, write_config
 from tests.fake_telegram.server import FakeTelegram
 from tests.helpers import sent_by, started, wait_for
@@ -124,10 +124,10 @@ async def test_request_goes_through_every_stage(app_factory: AppFactory, fake: F
     assert sorted(stages) == sorted(["created", "requisites", "sent", "receipt", "final"])
 
     # The player: TGID <-> MelID, with the name history.
-    player = await app.db.pool.fetch("SELECT kind, value, player_id FROM pl_nodes ORDER BY kind")
+    player = await app.db.pool.fetch("SELECT kind, value, player_id FROM players_nodes ORDER BY kind")
     assert [(r["kind"], r["value"]) for r in player] == [("mel", MEL), ("tg", TG)]
     assert len({r["player_id"] for r in player}) == 1
-    assert await app.db.pool.fetchval("SELECT username FROM pl_names WHERE tg_id = $1", int(TG)) == "x"
+    assert await app.db.pool.fetchval("SELECT username FROM players_names WHERE tg_id = $1", int(TG)) == "x"
 
     # Statistics from the daily aggregates; /trace by Deposit ID.
     summ = await ask(app, fake, "/summ")
@@ -257,9 +257,9 @@ async def snapshot(app: App) -> list[Any]:
     for sql in ("SELECT deposit_id, chat_id, kassas, stage, status, tgid, mel_id, amount, bonus, requisites, marks, "
                 "cashier_id, created_at, requisites_at, sent_at FROM deposits ORDER BY 1",
                 "SELECT deposit_id, trace_id, stage FROM deposit_events ORDER BY 1, 2, 3",
-                "SELECT kind, value, player_id FROM pl_nodes ORDER BY 1, 2",
-                "SELECT link_id, tg_id, mel_id, state, first_seen, last_seen FROM pl_links ORDER BY 1",
-                "SELECT id, kind, into_player, from_player, link_id, moved FROM pl_journal ORDER BY id",
+                "SELECT kind, value, player_id FROM players_nodes ORDER BY 1, 2",
+                "SELECT link_id, tg_id, mel_id, state, first_seen, last_seen FROM players_links ORDER BY 1",
+                "SELECT id, kind, into_player, from_player, link_id, moved FROM players_journal ORDER BY id",
                 "SELECT * FROM deposit_daily ORDER BY 1, 2, 3, 4"):
         out.append([tuple(r) for r in await app.db.pool.fetch(sql)])
     return out
@@ -276,21 +276,21 @@ async def test_players_join_without_limit_and_a_cut_link_splits_them(
 
     fake.post(KASSA, BOT, request("702", tg="3", mel="M2"))  # another player {3, M2}
     await app.idle()
-    first = await PL_store.player_of(app.db.pool, "tg", "1")
-    second = await PL_store.player_of(app.db.pool, "tg", "3")
-    fake.post(KASSA, BOT, request("703", tg="3", mel="M1"))  # TGID 3 used M1 too: one person (D-PL-1)
+    first = await players_store.player_of(app.db.pool, "tg", "1")
+    second = await players_store.player_of(app.db.pool, "tg", "3")
+    fake.post(KASSA, BOT, request("703", tg="3", mel="M1"))  # TGID 3 used M1 too: one person (D-PLAYERS-1)
     await app.idle()
     assert await players(app) == [["mel:M1", "mel:M2", "tg:1", "tg:2", "tg:3"]]
     # The older player stays; the younger id points at it.
-    assert await PL_store.player_of(app.db.pool, "mel", "M2") == first
-    assert second is not None and await PL_store.current(app.db.pool, second) == first
+    assert await players_store.player_of(app.db.pool, "mel", "M2") == first
+    assert second is not None and await players_store.current(app.db.pool, second) == first
     # Without a prefix the number is searched as TGID and as MelID.
     assert "Игрок #" in await ask(app, fake, "/player M2")
 
-    # A link cut by hand: the player is rebuilt from the remaining links (D-PL-2).
+    # A link cut by hand: the player is rebuilt from the remaining links (D-PLAYERS-2).
     assert "разорвана" in await ask(app, fake, "/unlink 3 M1")
     assert await players(app) == [["mel:M1", "tg:1", "tg:2"], ["mel:M2", "tg:3"]]
-    assert await PL_store.player_of(app.db.pool, "mel", "M1") == first
+    assert await players_store.player_of(app.db.pool, "mel", "M1") == first
     # The same pair again does not glue the parts back: the link stays cut.
     fake.post(KASSA, BOT, request("704", tg="3", mel="M1"))
     await app.idle()
@@ -314,12 +314,12 @@ async def test_sanction_marks_keep_author_and_time(app_factory: AppFactory, cfg:
     app = await make(app_factory, cfg)  # the tables of the module exist when the module is connected
 
     async with app.db.pool.acquire() as conn:
-        assert await PL_store.add_mark(conn, "scam", "tg", TG, author="8001", text="чек подделан",
+        assert await players_store.add_mark(conn, "scam", "tg", TG, author="8001", text="чек подделан",
                                     trace_id="00000000-0000-0000-0000-000000000001")
-        assert not await PL_store.add_mark(conn, "scam", "tg", TG, author="8001",
+        assert not await players_store.add_mark(conn, "scam", "tg", TG, author="8001",
                                         trace_id="00000000-0000-0000-0000-000000000001")  # repeat: no new mark
-        await PL_store.add_mark(conn, "unban", "tg", TG, author="8002")
-    rows = await app.db.pool.fetch("SELECT kind, author, created_at FROM pl_marks ORDER BY id")
+        await players_store.add_mark(conn, "unban", "tg", TG, author="8002")
+    rows = await app.db.pool.fetch("SELECT kind, author, created_at FROM players_marks ORDER BY id")
     assert [(r["kind"], r["author"]) for r in rows] == [("scam", "8001"), ("unban", "8002")]
     assert all(r["created_at"] is not None for r in rows)
 
@@ -382,7 +382,7 @@ async def test_reports_answer_within_a_second_at_ten_times_the_volume(
 
 # ---- helpers ---------------------------------------------------------------------------------------------------
 async def players(app: App) -> list[list[str]]:
-    rows = await app.db.pool.fetch("SELECT player_id, kind || ':' || value AS ident FROM pl_nodes")
+    rows = await app.db.pool.fetch("SELECT player_id, kind || ':' || value AS ident FROM players_nodes")
     groups: dict[int, list[str]] = {}
     for r in rows:
         groups.setdefault(r["player_id"], []).append(r["ident"])

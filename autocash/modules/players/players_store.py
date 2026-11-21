@@ -1,11 +1,11 @@
-"""PL: players as a graph of TGID <-> MelID links (PL_readme.md, D-PL-1..4).
+"""players: players as a graph of TGID <-> MelID links (players_readme.md, D-PLAYERS-1..4).
 
 - A link is one observed pair "this TGID used this MelID". Links are never deleted.
 - A player is a connected group of active links: a TGID with two MelIDs, or a MelID used by two TGIDs,
   makes one player. There is no size limit (one person may have thousands of MelIDs).
 - A new pair whose identifiers are both unknown makes a new player; a pair touching one known player joins
   it; a pair touching two players joins them: the older player (smaller id) stays, the younger one gets
-  `merged_into`. Every identifier of an active link is in `pl_nodes` with its current player.
+  `merged_into`. Every identifier of an active link is in `players_nodes` with its current player.
 - A link cut by hand (state disabled) or kept as staff joins nothing; the player is recomputed from the
   remaining active links and may fall apart (split): the part with the player's first link keeps its id.
 
@@ -42,7 +42,7 @@ async def _lock(conn: asyncpg.Connection) -> None:
 
 
 async def _node(conn: asyncpg.Connection, kind: str, value: str) -> int | None:
-    pid: int | None = await conn.fetchval("SELECT player_id FROM pl_nodes WHERE kind = $1 AND value = $2",
+    pid: int | None = await conn.fetchval("SELECT player_id FROM players_nodes WHERE kind = $1 AND value = $2",
                                           kind, value)
     return pid
 
@@ -53,29 +53,29 @@ async def _union(conn: asyncpg.Connection, link_id: int, tg_id: int, mel_id: str
     tg = str(tg_id)
     pt, pm = await _node(conn, "tg", tg), await _node(conn, "mel", mel_id)
     if pt is None and pm is None:
-        pid: int = await conn.fetchval("INSERT INTO pl_players (first_link_id) VALUES ($1) RETURNING player_id",
+        pid: int = await conn.fetchval("INSERT INTO players (first_link_id) VALUES ($1) RETURNING player_id",
                                        link_id)
-        await conn.executemany("INSERT INTO pl_nodes (kind, value, player_id) VALUES ($1, $2, $3)",
+        await conn.executemany("INSERT INTO players_nodes (kind, value, player_id) VALUES ($1, $2, $3)",
                                [("tg", tg, pid), ("mel", mel_id, pid)])
         return pid, True, []
     if pt is None or pm is None:
         known = pt if pt is not None else pm
         assert known is not None
         kind, value = ("tg", tg) if pt is None else ("mel", mel_id)
-        await conn.execute("INSERT INTO pl_nodes (kind, value, player_id) VALUES ($1, $2, $3)", kind, value, known)
+        await conn.execute("INSERT INTO players_nodes (kind, value, player_id) VALUES ($1, $2, $3)", kind, value, known)
         return known, False, []
     if pt == pm:
         return pt, False, []
     # Two players meet: the older one (smaller id) stays.
     into, src = min(pt, pm), max(pt, pm)
     moved = await conn.fetchval(
-        "WITH m AS (UPDATE pl_nodes SET player_id = $1, since = now() WHERE player_id = $2 RETURNING 1) "
+        "WITH m AS (UPDATE players_nodes SET player_id = $1, since = now() WHERE player_id = $2 RETURNING 1) "
         "SELECT count(*) FROM m", into, src)
     # Ids already pointing at the younger player point at the one that stays: a chain is one step long.
-    await conn.execute("UPDATE pl_players SET merged_into = $1, merged_at = now() "
+    await conn.execute("UPDATE players SET merged_into = $1, merged_at = now() "
                        "WHERE player_id = $2 OR merged_into = $2", into, src)
     await conn.execute(
-        "INSERT INTO pl_journal (kind, into_player, from_player, link_id, moved, data, author) "
+        "INSERT INTO players_journal (kind, into_player, from_player, link_id, moved, data, author) "
         "VALUES ('join', $1, $2, $3, $4, $5::jsonb, $6)",
         into, src, link_id, moved, json.dumps({"tg_id": tg_id, "mel_id": mel_id}), author)
     return into, False, [src]
@@ -92,11 +92,11 @@ async def add_link(pool: asyncpg.Pool, tg_id: int, mel_id: str, *, source: str, 
     async with pool.acquire() as conn, conn.transaction():
         await _lock(conn)
         row = await conn.fetchrow(
-            "INSERT INTO pl_links (tg_id, mel_id, state, source, ref, first_seen, last_seen) "
+            "INSERT INTO players_links (tg_id, mel_id, state, source, ref, first_seen, last_seen) "
             "VALUES ($1, $2, $3, $4, $5, coalesce($6, now()), coalesce($6, now())) "
             "ON CONFLICT (tg_id, mel_id) DO UPDATE SET "
-            "first_seen = least(pl_links.first_seen, EXCLUDED.first_seen), "
-            "last_seen = greatest(pl_links.last_seen, EXCLUDED.last_seen) "
+            "first_seen = least(players_links.first_seen, EXCLUDED.first_seen), "
+            "last_seen = greatest(players_links.last_seen, EXCLUDED.last_seen) "
             "RETURNING link_id, state, (xmax = 0) AS inserted",
             tg_id, mel_id, "staff" if staff else "active", source, ref, at)
         link_id, state, inserted = int(row["link_id"]), str(row["state"]), bool(row["inserted"])
@@ -106,19 +106,21 @@ async def add_link(pool: asyncpg.Pool, tg_id: int, mel_id: str, *, source: str, 
         return Linked(link_id, pid, inserted, created, joined)
 
 
-async def heal(pool: asyncpg.Pool) -> int:
-    """Active links whose identifiers are missing from pl_nodes or sit in different players are joined.
+async def heal(pool: asyncpg.Pool, limit: int | None = None) -> int:
+    """Active links whose identifiers are missing from players_nodes or sit in different players are joined.
 
     Runs at start: links copied by the migration (Autosup, RM) get their players here; normally a no-op.
+    The history of orders writes thousands of links at once and joins them `limit` at a time, so the lock of
+    the graph is never held long (returns how many were joined: fewer than `limit` - nothing is left).
     """
     async with pool.acquire() as conn, conn.transaction():
         await _lock(conn)
         rows = await conn.fetch(
-            "SELECT l.link_id, l.tg_id, l.mel_id FROM pl_links l "
-            "LEFT JOIN pl_nodes t ON t.kind = 'tg' AND t.value = l.tg_id::text "
-            "LEFT JOIN pl_nodes m ON m.kind = 'mel' AND m.value = l.mel_id "
+            "SELECT l.link_id, l.tg_id, l.mel_id FROM players_links l "
+            "LEFT JOIN players_nodes t ON t.kind = 'tg' AND t.value = l.tg_id::text "
+            "LEFT JOIN players_nodes m ON m.kind = 'mel' AND m.value = l.mel_id "
             "WHERE l.state = 'active' AND (t.player_id IS NULL OR m.player_id IS NULL OR t.player_id <> m.player_id) "
-            "ORDER BY l.link_id")
+            "ORDER BY l.link_id LIMIT $1", limit)
         for r in rows:
             await _union(conn, int(r["link_id"]), int(r["tg_id"]), str(r["mel_id"]))
         return len(rows)
@@ -133,16 +135,17 @@ async def set_state(pool: asyncpg.Pool, tg_id: int, mel_id: str, state: str, *, 
         raise ValueError(state)
     async with pool.acquire() as conn, conn.transaction():
         await _lock(conn)
-        row = await conn.fetchrow("SELECT link_id, state FROM pl_links WHERE tg_id = $1 AND mel_id = $2 FOR UPDATE",
-                                  tg_id, mel_id)
+        row = await conn.fetchrow(
+            "SELECT link_id, state FROM players_links WHERE tg_id = $1 AND mel_id = $2 FOR UPDATE", tg_id, mel_id)
         if row is None:
             return "missing"
         link_id, before = int(row["link_id"]), str(row["state"])
         if before == state:
             return "same"
-        await conn.execute("UPDATE pl_links SET state = $2, changed_by = $3 WHERE link_id = $1", link_id, state, author)
+        await conn.execute("UPDATE players_links SET state = $2, changed_by = $3 WHERE link_id = $1",
+                           link_id, state, author)
         await conn.execute(
-            "INSERT INTO pl_journal (kind, link_id, data, author) VALUES ('state', $1, $2::jsonb, $3)",
+            "INSERT INTO players_journal (kind, link_id, data, author) VALUES ('state', $1, $2::jsonb, $3)",
             link_id, json.dumps({"tg_id": tg_id, "mel_id": mel_id, "before": before, "after": state}), author)
         if state == "active":
             await _union(conn, link_id, tg_id, mel_id, author)
@@ -155,11 +158,11 @@ async def set_state(pool: asyncpg.Pool, tg_id: int, mel_id: str, state: str, *, 
 
 async def _recompute(conn: asyncpg.Connection, player_id: int, link_id: int, author: str | None) -> None:
     """Rebuild a player from its active links: parts that lost their connection become new players."""
-    nodes = await conn.fetch("SELECT kind, value FROM pl_nodes WHERE player_id = $1", player_id)
+    nodes = await conn.fetch("SELECT kind, value FROM players_nodes WHERE player_id = $1", player_id)
     tgs = [int(r["value"]) for r in nodes if r["kind"] == "tg"]
     mels = [str(r["value"]) for r in nodes if r["kind"] == "mel"]
     links = await conn.fetch(
-        "SELECT link_id, tg_id, mel_id FROM pl_links WHERE state = 'active' "
+        "SELECT link_id, tg_id, mel_id FROM players_links WHERE state = 'active' "
         "AND tg_id = ANY($1::bigint[]) AND mel_id = ANY($2::text[])", tgs, mels)
     parent: dict[tuple[str, str], tuple[str, str]] = {}
 
@@ -181,41 +184,41 @@ async def _recompute(conn: asyncpg.Connection, player_id: int, link_id: int, aut
         part_links.setdefault(find(("tg", str(r["tg_id"]))), set()).add(int(r["link_id"]))
     loose = [(str(r["kind"]), str(r["value"])) for r in nodes if (str(r["kind"]), str(r["value"])) not in parent]
     if loose:  # identifiers left without an active link belong to no player
-        await conn.executemany("DELETE FROM pl_nodes WHERE kind = $1 AND value = $2", loose)
-    first_link = await conn.fetchval("SELECT first_link_id FROM pl_players WHERE player_id = $1", player_id)
+        await conn.executemany("DELETE FROM players_nodes WHERE kind = $1 AND value = $2", loose)
+    first_link = await conn.fetchval("SELECT first_link_id FROM players WHERE player_id = $1", player_id)
     # The part with the player's first link keeps the id; without it - the largest part, then the oldest.
     roots = sorted(parts, key=lambda r: (first_link not in part_links[r], -len(parts[r]), min(part_links[r])))
     for root in roots[1:]:
         group = parts[root]
         new_pid: int = await conn.fetchval(
-            "INSERT INTO pl_players (first_link_id) VALUES ($1) RETURNING player_id", min(part_links[root]))
-        await conn.executemany("UPDATE pl_nodes SET player_id = $3, since = now() WHERE kind = $1 AND value = $2",
+            "INSERT INTO players (first_link_id) VALUES ($1) RETURNING player_id", min(part_links[root]))
+        await conn.executemany("UPDATE players_nodes SET player_id = $3, since = now() WHERE kind = $1 AND value = $2",
                                [(k, v, new_pid) for k, v in group])
         await conn.execute(
-            "INSERT INTO pl_journal (kind, into_player, from_player, link_id, moved, data, author) "
+            "INSERT INTO players_journal (kind, into_player, from_player, link_id, moved, data, author) "
             "VALUES ('split', $1, $2, $3, $4, '{}'::jsonb, $5)", new_pid, player_id, link_id, len(group), author)
     if loose and len(roots) <= 1:
         await conn.execute(
-            "INSERT INTO pl_journal (kind, into_player, from_player, link_id, moved, data, author) "
+            "INSERT INTO players_journal (kind, into_player, from_player, link_id, moved, data, author) "
             "VALUES ('split', NULL, $1, $2, $3, $4::jsonb, $5)",
             player_id, link_id, len(loose), json.dumps({"loose": [f"{k}:{v}" for k, v in loose]}), author)
 
 
 # ---- reads -------------------------------------------------------------------------------------------------
 async def player_of(db: Any, kind: str, value: str | int) -> int | None:
-    pid: int | None = await db.fetchval("SELECT player_id FROM pl_nodes WHERE kind = $1 AND value = $2",
+    pid: int | None = await db.fetchval("SELECT player_id FROM players_nodes WHERE kind = $1 AND value = $2",
                                         kind, str(value))
     return pid
 
 
 async def current(db: Any, player_id: int) -> int:
     """The player an old id stands for now (after joins the younger id points at the one that stayed)."""
-    into = await db.fetchval("SELECT merged_into FROM pl_players WHERE player_id = $1", player_id)
+    into = await db.fetchval("SELECT merged_into FROM players WHERE player_id = $1", player_id)
     return int(into) if into is not None else player_id
 
 
 async def idents(db: Any, player_id: int) -> dict[str, list[str]]:
-    rows = await db.fetch("SELECT kind, value FROM pl_nodes WHERE player_id = $1 ORDER BY kind, value", player_id)
+    rows = await db.fetch("SELECT kind, value FROM players_nodes WHERE player_id = $1 ORDER BY kind, value", player_id)
     out: dict[str, list[str]] = {"tg": [], "mel": []}
     for r in rows:
         out[r["kind"]].append(r["value"])
@@ -231,7 +234,7 @@ async def mels_of_tg(db: Any, tg_id: int) -> list[str]:
 async def links_of(db: Any, tgs: Iterable[int], mels: Iterable[str]) -> list[Any]:
     """Every link touching these identifiers, any state (for the card of a player)."""
     rows: list[Any] = await db.fetch(
-        "SELECT link_id, tg_id, mel_id, state, source, first_seen, last_seen FROM pl_links "
+        "SELECT link_id, tg_id, mel_id, state, source, first_seen, last_seen FROM players_links "
         "WHERE tg_id = ANY($1::bigint[]) OR mel_id = ANY($2::text[]) ORDER BY link_id",
         [int(t) for t in tgs], list(mels))
     return rows
@@ -251,11 +254,11 @@ async def resolve(db: Any, arg: str) -> Resolution:
     kind, sep, value = arg.partition(":")
     if (arg.startswith("#") and arg[1:].isdigit()) or (sep and kind == "p" and value.isdigit()):
         pid = int(arg[1:] if arg.startswith("#") else value)
-        exists = await db.fetchval("SELECT 1 FROM pl_players WHERE player_id = $1", pid)
+        exists = await db.fetchval("SELECT 1 FROM players WHERE player_id = $1", pid)
         return Resolution(await current(db, pid) if exists else None, [], "player", str(pid))
     if sep and kind in KINDS:
         return Resolution(await player_of(db, kind, value), [], kind, value)
-    rows = await db.fetch("SELECT DISTINCT kind, player_id FROM pl_nodes WHERE value = $1 ORDER BY kind", arg)
+    rows = await db.fetch("SELECT DISTINCT kind, player_id FROM players_nodes WHERE value = $1 ORDER BY kind", arg)
     players = sorted({int(r["player_id"]) for r in rows})
     if len(players) > 1:
         return Resolution(None, players, None, arg)
@@ -265,7 +268,7 @@ async def resolve(db: Any, arg: str) -> Resolution:
 # ---- names and marks ---------------------------------------------------------------------------------------
 async def note_name(conn: Any, tg_id: int, username: str | None, name: str | None) -> None:
     """Names and usernames are kept as history (FT-И.2)."""
-    await conn.execute("INSERT INTO pl_names (tg_id, username, name) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+    await conn.execute("INSERT INTO players_names (tg_id, username, name) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
                        tg_id, (username or "").lstrip("@"), name or "")
 
 
@@ -275,7 +278,7 @@ async def add_mark(conn: Any, kind: str, ident_kind: str, ident: str, *, author:
     if ident_kind not in KINDS:
         raise ValueError(ident_kind)
     added = await conn.fetchval(
-        "INSERT INTO pl_marks (kind, ident_kind, ident, text, author, trace_id) "
+        "INSERT INTO players_marks (kind, ident_kind, ident, text, author, trace_id) "
         "VALUES ($1, $2, $3, $4, $5, $6::uuid) ON CONFLICT DO NOTHING RETURNING 1",
         kind, ident_kind, ident, text, author, trace_id)
     return bool(added)

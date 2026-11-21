@@ -10,8 +10,8 @@ import pytest
 
 from autocash.core.app import App
 from autocash.modules.autosup.AS_module import AutosupModule
-from autocash.modules.players import PL_store
-from autocash.modules.players.PL_module import PlayersModule
+from autocash.modules.players import players_store
+from autocash.modules.players.players_module import PlayersModule
 from autocash.modules.role_manager.RM_module import RoleManagerModule
 from autocash.modules.ticket_system import TS_codes
 from autocash.modules.ticket_system.TS_module import TicketSystemModule
@@ -117,7 +117,7 @@ async def test_a_pdf_is_a_deposit_and_the_player_is_shown_with_nick_and_melid(
         app_factory: AppFactory, fake: FakeTelegram, cfg: dict[str, Any]) -> None:
     app = await ts_app(app_factory, fake, cfg)
     await app.db.pool.execute("UPDATE rm_users SET username = 'nick5' WHERE tg_id = $1", P5)
-    await PL_store.add_link(app.db.pool, P5, "1234567890", source="test")
+    await players_store.add_link(app.db.pool, P5, "1234567890", source="test")
     fake.post(P5, P5, "", media_type="pdf")
     await wait_for(lambda: logs(fake), what="the record in logs")
     assert f"— D · игрок {P5} (@nick5, MelID 1234567890) · аккаунт " in logs(fake)[0]

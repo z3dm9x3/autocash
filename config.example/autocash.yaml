@@ -84,9 +84,9 @@ queue:
 # template must be written from recorded kassa messages (tests/fixtures/messages/README.md).
 modules:
   role_manager: {}                     # the first module: users, groups, roles, rights (RM_readme.md)
-  players:                             # one person behind many TGIDs and MelIDs; needed by autosup (PL_readme.md)
+  players:                             # one person behind many TGIDs and MelIDs; needed by autosup (players_readme.md)
     config:
-      staff_user_types: [CASHIER]      # «Тип пользователя» of a card whose pair joins nothing
+      staff_user_types: [CASHIER, ADMIN]  # «Тип пользователя» of a card whose pair joins nothing
   autosup:                             # talks to players: the ID; hands messages to TS, logs tickets (AS_readme.md)
     config:
       grace_s: 60
@@ -95,6 +95,14 @@ modules:
       burst_s: 60                      # the first trigger within this minute types the ticket, none -> Q
       # rules: [...]                   # replaces ALL default C-ticket rules (TS_rules.DEFAULT_RULES)
       # code_exclusions: [EPOS, Read, Cash]  # 4-char words that are never withdrawal codes (replaces the default list)
+  orders:                              # deposits and withdrawals; the history of Cash Monitor Dev; /dev in logs
+    config:                            # (orders_readme.md); needs role_manager and players
+      delete_after_s: 300              # /dev: the command and its reply are deleted after this
+      history:
+        enabled: false                 # read the archive through dblink (autocash-pg.ps1 dblink, once)
+        source_ini: C:/Users/Den/Documents/ChatGPT/CASH MONITOR DEV/settings.ini  # or AUTOCASH_HISTORY_DSN
+        batch: 1000                    # raw_messages ids per step
+        interval_s: 5                  # between steps of the first pass; the tail: idle_interval_s (30)
   # DRAFTS: the logic of kassa messages is not known yet, these modules are switched off.
   deposits:
     enabled: false

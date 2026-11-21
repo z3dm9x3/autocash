@@ -8,7 +8,7 @@ Called by the protocols of Role Manager, works in the background, private dialog
   in the history of the dialog; found -> take it; not found -> as the first contact (the same 60 s,
   then the request), the dialog is marked "second";
 - while Autosup waits, the next message of the user with an ID (AS_ids) ends it: the player is
-  written (the pair TGID - MelID goes to the graph of players, PL_store.add_link) and the message is
+  written (the pair TGID - MelID goes to the graph of players, players_store.add_link) and the message is
   pinned. An ID written with spaces is sent back normalized by Autosup, and that message is pinned.
 - /as on | off | ? (Admin, Dev; only in a group with the role tech): the switch of Autosup.
 - the ticket system (TS, D-TS-1): Autosup is the side that talks to players. Every private message of a
@@ -33,7 +33,7 @@ from autocash.core.record import MessageRecord
 from autocash.core.trace.codes import Reason, Status
 from autocash.modules.api import Context, Event, Module, Services
 from autocash.modules.autosup.AS_ids import FoundId, find_id
-from autocash.modules.players import PL_store
+from autocash.modules.players import players_store
 from autocash.modules.role_manager.RM_module import SERVICE_USERS
 from autocash.modules.ticket_system import TS_api
 
@@ -79,8 +79,8 @@ class AutosupModule(Module):
         return ASConfig.model_validate(mod.config if mod is not None else {})
 
     async def start(self) -> None:
-        if await self.svc.db.pool.fetchval("SELECT to_regclass('pl_links') IS NULL"):
-            # The player of an ID is written to the graph of the module players (D-PL-3).
+        if await self.svc.db.pool.fetchval("SELECT to_regclass('players_links') IS NULL"):
+            # The player of an ID is written to the graph of the module players (D-PLAYERS-3).
             raise RuntimeError("Autosup needs the module players: add `players: {}` to `modules` of the configuration")
         self.enabled = bool(await self.svc.db.pool.fetchval("SELECT enabled FROM as_settings WHERE id = 1"))
         log.info("AS: Autosup is %s", "on" if self.enabled else "off")
@@ -201,7 +201,7 @@ class AutosupModule(Module):
         pool = self.svc.db.pool
         tg_id, account_id = int(data["tg_id"]), int(data["account_id"])
         user = await pool.fetchrow("SELECT username FROM rm_users WHERE tg_id = $1", tg_id)
-        mels = await PL_store.mels_of_tg(pool, tg_id)
+        mels = await players_store.mels_of_tg(pool, tg_id)
         about = [f"@{user['username']}"] if user is not None and user["username"] else []
         more = f" и ещё {len(mels) - 5}" if len(mels) > 5 else ""  # a player may have thousands of MelIDs
         about += [f"MelID {', '.join(mels[:5])}{more}"] if mels else []
@@ -250,7 +250,7 @@ class AutosupModule(Module):
     # ---- the player ------------------------------------------------------------------------------
     async def _register(self, tg_id: int, account_id: int, contact: str, found_in: str, msg_id: int,
                         fid: FoundId) -> None:
-        link = await PL_store.add_link(self.svc.db.pool, tg_id, fid.mel_id, source=NAME,
+        link = await players_store.add_link(self.svc.db.pool, tg_id, fid.mel_id, source=NAME,
                                        ref=f"{account_id}:{msg_id}")
         await self.svc.db.pool.execute(
             "INSERT INTO as_dialogs (tg_id, account_id, contact, state, mel_id, found_in, msg_id, player_id) "

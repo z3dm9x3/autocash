@@ -267,6 +267,7 @@ class App:
                              self._dialog_history, self.protocols.wake, self._create_outbound,
                              self._read_dialog))
         self.gateway.any_chat_commands.update(module.commands_any_chat)
+        self.gateway.logs_chat_commands.update(module.commands_logs_chat)
         resolver = module.trace_resolver()
         if resolver is not None:
             self.commands.resolvers.append(resolver)

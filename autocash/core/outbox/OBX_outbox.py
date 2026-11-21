@@ -12,6 +12,11 @@ Modules create tasks (OBX_tasks); the Outbox sends them by its rules:
     with the same random_id, and RANDOM_ID_DUPLICATE means "already delivered" (FT-9.3). A blocked
     user, a gone chat, a forbidden write: final "not delivered" at once. Past the TTL: final
     "expired". Final failures are reported to the group logs (throttled) and to the monitor log.
+  * delete (D-OBX-8): the preferred account (the sender) first, then every other account of the pool in
+    the chat; an account that could not delete the message is not tried again for that task. When no
+    account is left the task ends not_delivered DELETE_FAILED, reported to the monitor log and to logs.
+  * not_before: a task is not routed before its time (SCHEDULED); a send with delete_after_s makes a
+    delete task of the sent message after delivery.
 Each account sends its tasks one by one, different accounts send in parallel (FT-9.2).
 """
 
@@ -23,7 +28,7 @@ import logging
 import secrets
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Any
 
@@ -48,14 +53,15 @@ from autocash.core.trace.codes import Reason, Status
 log = logging.getLogger(__name__)
 
 # Methods that write to Telegram: paced by the Outbox queue; every other method is a read (D-OBX-7).
-WRITE_METHODS = frozenset({"send", "pin"})
+WRITE_METHODS = frozenset({"send", "pin", "delete"})
 
 # Task kind -> API budget class of the pool limiter (FT-10.2).
 _BUDGET = {"command_reply": COMMAND_REPLY, "client_reply": CLIENT_REPLY}
 
 _LOAD = """
 SELECT id, priority, chat_id, dialog_account_id, stage, account_id, finished_at, kind, action, binding,
-       extract(epoch FROM expires_at)::float8 AS expires
+       extract(epoch FROM expires_at)::float8 AS expires, extract(epoch FROM not_before)::float8 AS not_before,
+       prefer_account_id, target_msg_id
 FROM outbound_tasks WHERE id = $1
 """
 _ASSIGN = """
@@ -101,6 +107,10 @@ class _Task:
     sending: bool = False
     timer: asyncio.TimerHandle | None = None
     waited_ms: int = 0  # held back by the antiflood
+    not_before: float | None = None  # not routed before this time (epoch)
+    prefer: int | None = None  # unbound task: the account tried first
+    target: int | None = None  # action delete: the message
+    tried: set[int] = field(default_factory=set)  # action delete: accounts that could not delete it
 
 
 class Outbox:
@@ -225,7 +235,8 @@ class Outbox:
         recent = await self._db.pool.fetch(
             "SELECT a.account_id, t.chat_id, extract(epoch FROM now() - a.at)::float8 AS age FROM outbound_attempts a "
             "JOIN outbound_tasks t ON t.id = a.task_id WHERE a.at > now() - interval '60 seconds' "
-            "AND a.result IN ('delivered', 'duplicate', 'pinned') AND a.account_id IS NOT NULL ORDER BY a.at")
+            "AND a.result IN ('delivered', 'duplicate', 'pinned', 'deleted') AND a.account_id IS NOT NULL "
+            "ORDER BY a.at")
         now = time.monotonic()
         for rec in recent:
             self.antiflood.wrote(None, int(rec["account_id"]), int(rec["chat_id"]), at=now - float(rec["age"]))
@@ -323,7 +334,13 @@ class Outbox:
             if row is None or row["finished_at"] is not None:
                 return
             task = _Task(row["id"], row["priority"], row["chat_id"], row["dialog_account_id"], row["expires"],
-                         row["kind"], row["action"], row["binding"] != "none")
+                         row["kind"], row["action"], row["binding"] != "none", not_before=row["not_before"],
+                         prefer=row["prefer_account_id"], target=row["target_msg_id"])
+            if task.action == "delete":
+                # Accounts that already failed to delete the message are not tried again (also after a restart).
+                task.tried = {int(r["account_id"]) for r in await self._db.pool.fetch(
+                    "SELECT DISTINCT account_id FROM outbound_attempts WHERE task_id = $1 AND result = 'not_deleted' "
+                    "AND account_id IS NOT NULL", task_id)}
             if row["stage"] == "sending":
                 # The process died during a send: only the same account can repeat it with the same
                 # random_id and learn that the message was already delivered (FT-9.3).
@@ -336,6 +353,14 @@ class Outbox:
         if task.expires is not None and time.time() >= task.expires:
             # The final status keeps the last reason the task was waiting for (FT-9.6).
             await self._finish(task, None, Status.EXPIRED, Reason.TTL_EXPIRED)
+            self.failed += 1
+            return
+        if task.not_before is not None and time.time() < task.not_before:
+            await self._park(task, str(Reason.SCHEDULED), task.not_before)
+            return
+        if task.action == "delete" and task.tried and not self._delete_left(task):
+            # Every account of the pool in the chat tried and could not: the end, nothing more is done.
+            await self._finish(task, None, Status.NOT_DELIVERED, Reason.DELETE_FAILED)
             self.failed += 1
             return
         decision, reason, until = self._choose(task)
@@ -359,9 +384,18 @@ class Outbox:
         return [a for a, can_send in pool.membership.members(chat_id).items()
                 if can_send and pool.state(a) is AccountState.ACTIVE]
 
+    def _delete_left(self, task: _Task) -> list[int]:
+        """Accounts that may still try to delete the message (any state): members of the chat not tried yet."""
+        if task.chat_id > 0:
+            own = task.prefer if task.prefer is not None else self._dialog_account(task)
+            return [own] if own is not None and own not in task.tried else []
+        return [a for a in self._pool.membership.members(task.chat_id) if a not in task.tried]
+
     def _usable(self, task: _Task, account_id: int) -> bool:
         if self._pool.state(account_id) is not AccountState.ACTIVE:
             return False
+        if task.action == "delete":
+            return account_id in self._delete_left(task)
         if task.bound and task.dialog_account_id is not None and account_id != task.dialog_account_id:
             return False
         return task.chat_id > 0 or task.pinned == account_id or account_id in self._senders(task.chat_id)
@@ -378,6 +412,16 @@ class Outbox:
     def _choose(self, task: _Task) -> tuple[Decision | None, Reason | None, float | None]:
         """The account for the task (OBX_Router), or the reason it has to wait (and until when)."""
         pool = self._pool
+        if task.action == "delete":
+            # Deleting needs no right to write: any member may try; the sender first (its own message).
+            left = [a for a in self._delete_left(task) if pool.state(a) is AccountState.ACTIVE]
+            if not left:
+                return None, Reason.NO_ACCOUNT_IN_CHAT, None
+            if task.prefer in left:
+                return Decision(task.prefer, len(left) > 1), None, None
+            found = choose(left, self.antiflood, lambda a: self._queues[a].qsize() if a in self._queues else 0,
+                           self._scheduler.account_for(SEND, task.chat_id))
+            return (found, None, None) if found is not None else (None, Reason.NO_ACCOUNT_IN_CHAT, None)
         if task.pinned is not None:
             fixed: int | None = task.pinned
         elif task.chat_id > 0:
@@ -478,36 +522,43 @@ class Outbox:
 
     async def _finish(self, task: _Task, stage: str | None, status: Status, reason: str | None,
                       msg_id: int | None = None, attempt: tuple[Any, ...] | None = None,
-                      follow: OutboundDraft | None = None) -> None:
+                      follow: list[OutboundDraft] | None = None) -> None:
         waited, task.waited_ms = task.waited_ms, 0
 
-        async def fn(conn: asyncpg.Connection) -> int | None:
+        async def fn(conn: asyncpg.Connection) -> list[int]:
             await conn.execute(_FINISH, task.id, stage, str(status), reason, msg_id, waited)
             if attempt is not None:
                 await conn.execute(_ATTEMPT, *attempt)
-            if follow is None:
-                return None
-            # "Send, then pin": the pin is a task of its own, bound to the same account (D-OBX-5).
+            if not follow:
+                return []
+            # "Send, then pin" / "send, then delete later": tasks of their own (D-OBX-5, D-OBX-8).
             row = await conn.fetchrow("SELECT trace_id, module, dedup_key, config_version, "
                                       "extract(epoch FROM expires_at - now())::float8 AS left_s "
                                       "FROM outbound_tasks WHERE id = $1", task.id)
-            follow.dedup_key = f"{row['dedup_key']}:pin"
-            return await insert_outbound(conn, follow, parent_trace_id=str(row["trace_id"]), module=row["module"],
-                                         ttl_s=max(float(row["left_s"] or 0), 60.0),
-                                         config_version=row["config_version"] or "")
+            ids = []
+            for draft in follow:
+                draft.dedup_key = f"{row['dedup_key']}:{draft.action}"
+                left = max(float(row["left_s"] or 0), 3600.0 if draft.action == "delete" else 60.0)
+                new_id = await insert_outbound(conn, draft, parent_trace_id=str(row["trace_id"]),
+                                               module=row["module"], ttl_s=left,
+                                               config_version=row["config_version"] or "")
+                if new_id:
+                    ids.append(new_id)
+            return ids
 
-        follow_id = await self._writer.submit_sync(fn)
+        follow_ids = await self._writer.submit_sync(fn)
         self._forget(task)
-        if follow_id:
-            self.enqueue([follow_id])
+        if follow_ids:
+            self.enqueue(follow_ids)
         if status in (Status.NOT_DELIVERED, Status.EXPIRED):
             self._report(task, reason)
 
     def _report(self, task: _Task, reason: str | None) -> None:
         """A final failure: the monitor log always, the group logs at most once per window (D-OBX-4)."""
-        log.warning("outbox: task %s to %s finally failed: %s", task.id, task.chat_id, reason)
+        log.warning("outbox: task %s (%s) to %s finally failed: %s", task.id, task.action, task.chat_id, reason)
         logs = self._store.current.config.service_chats.logs
-        if self.on_failure is None or task.chat_id == logs:
+        # A failed delete is reported to logs even for a message in logs: the report itself is never deleted.
+        if self.on_failure is None or (task.chat_id == logs and task.action != "delete"):
             return
         self._failure_count += 1
         now = time.monotonic()
@@ -516,13 +567,18 @@ class Outbox:
             return
         self._failure_last, count, self._failure_count = now, self._failure_count, 0
         more = f" (неудач с прошлого сообщения: {count})" if count > 1 else ""
+        if task.action == "delete":
+            self.on_failure(f"Outbox: сообщение {task.target} в чате {task.chat_id} не удалено (задача {task.id}): "
+                            f"{reason}{more}")
+            return
         self.on_failure(f"Outbox: задача {task.id} в чат {task.chat_id} не доставлена: {reason}{more}")
 
     async def _send(self, acc: Account, task: _Task) -> None:
         cfg = self._store.current.config.outbox
         row = await self._db.pool.fetchrow(
-            "SELECT text, random_id, reply_to, finished_at, pin_msg_id, pin_after_send, "
-            "(expires_at IS NOT NULL AND expires_at < now()) AS expired FROM outbound_tasks WHERE id = $1", task.id,
+            "SELECT text, random_id, reply_to, finished_at, pin_msg_id, pin_after_send, target_msg_id, "
+            "delete_after_s, (expires_at IS NOT NULL AND expires_at < now()) AS expired FROM outbound_tasks "
+            "WHERE id = $1", task.id,
         )
         if row is None or row["finished_at"] is not None:
             self._forget(task)
@@ -539,6 +595,9 @@ class Outbox:
         crashpoints.hit("output_before_send")
         if task.action == "pin":
             await self._pin(acc, task, int(row["pin_msg_id"]), attempts, cfg)
+            return
+        if task.action == "delete":
+            await self._delete(acc, task, int(row["target_msg_id"]), attempts, cfg)
             return
         self._own.register(chat_id, row["text"])
         try:
@@ -570,10 +629,14 @@ class Outbox:
         self._paced(acc, task)
         if msg_id is not None:
             self._own.delivered(chat_id, msg_id)
-        follow = None
+        follow = []
         if row["pin_after_send"] and msg_id is not None:
-            follow = OutboundDraft(chat_id=chat_id, text="", rule="pin", kind=task.kind, via_account=account,
-                                   action="pin", pin_msg_id=msg_id)
+            follow.append(OutboundDraft(chat_id=chat_id, text="", rule="pin", kind=task.kind, via_account=account,
+                                        action="pin", pin_msg_id=msg_id))
+        if row["delete_after_s"] is not None and msg_id is not None:
+            follow.append(OutboundDraft(chat_id=chat_id, text="", rule="delete", kind=task.kind, action="delete",
+                                        target_msg_id=msg_id, not_before_s=float(row["delete_after_s"]),
+                                        prefer_account=account))
         await self._finish(task, "delivered", Status.DELIVERED, None, msg_id,
                            attempt=(task.id, account, result, None), follow=follow)
         self.delivered += 1
@@ -599,6 +662,36 @@ class Outbox:
         await self._finish(task, "delivered", Status.DELIVERED, None, msg_id,
                            attempt=(task.id, account, "pinned", None))
         self.delivered += 1
+
+    async def _delete(self, acc: Account, task: _Task, msg_id: int, attempts: int, cfg: Any) -> None:
+        """Action "delete" (D-OBX-8). Telegram refused, or deleted nothing: the next account of the chat tries."""
+        account, client, chat_id = acc.account_id, acc.client, task.chat_id
+        try:
+            deleted = await acc.limiter.call(_BUDGET.get(task.kind, NOTIFY), "delete", lambda: asyncio.wait_for(
+                client.delete_messages(chat_id, [msg_id]), cfg.confirm_timeout_s))
+        except FloodWait as exc:
+            await self._write(_ATTEMPT, task.id, account, "flood_wait", exc.args[0])
+            self._release(task)
+            return
+        except TelegramError as exc:
+            deleted, code = 0, exc.code
+        except (OSError, TimeoutError) as exc:
+            await self._retry(task, account, f"NETWORK:{type(exc).__name__}", attempts, cfg.max_attempts,
+                              cfg.retry_base_s)
+            return
+        else:
+            code = "NOT_DELETED"
+        self._paced(acc, task)
+        if deleted:
+            await self._finish(task, "delivered", Status.DELIVERED, None, msg_id,
+                               attempt=(task.id, account, "deleted", None))
+            self.delivered += 1
+            return
+        # This account cannot delete it (not the sender, no admin right, already gone): another one tries.
+        log.info("outbox: account %s could not delete message %s in %s: %s", account, msg_id, chat_id, code)
+        await self._write(_ATTEMPT, task.id, account, "not_deleted", code)
+        task.tried.add(account)
+        self._release(task)
 
     async def _on_error(self, acc: Account, task: _Task, code: str, attempts: int, max_attempts: int,
                         retry_base_s: float) -> None:

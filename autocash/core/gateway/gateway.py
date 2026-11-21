@@ -73,6 +73,8 @@ class Gateway:
         self.on_command: Callable[[dict[str, Any]], None] | None = None
         # Commands accepted from groups that are not read (policy presence/meta), e.g. /rm ? (D-RM-4).
         self.any_chat_commands: set[str] = set()
+        # Commands accepted in the group `logs`; nothing else of it is read (FT-2.4, D-ORDERS-6).
+        self.logs_chat_commands: set[str] = set()
         self.duplicates = 0
         self.rejected = 0
         self.ignored = 0
@@ -116,15 +118,19 @@ class Gateway:
         src = rt.source(ev.chat_id)
         exact = ev.chat_kind in SHARED_ID_KINDS
         if src.policy == "ignore":
-            self.ignored += 1
-            return
-        self._touch(ev, src.policy, src.known, approx=ev.chat_kind == "group")
-        if not src.known and ev.chat_id not in self._announced:
-            # Only the monitor log: an account sits in hundreds of groups without a role ("other"), and
-            # a notice per group to `logs` after every start would flood it (AGENTS.md, rule 9; D-RM-15).
-            self._announced.add(ev.chat_id)
-            log.info("chat without a role: %s (%s), intake policy: %s", ev.chat_title or "", ev.chat_id, src.policy)
-        command = self._any_chat_command(ev, src.policy, rt)
+            command = self._logs_chat_command(ev, rt)
+            if command is None:
+                self.ignored += 1
+                return
+        else:
+            self._touch(ev, src.policy, src.known, approx=ev.chat_kind == "group")
+            if not src.known and ev.chat_id not in self._announced:
+                # Only the monitor log: an account sits in hundreds of groups without a role ("other"), and
+                # a notice per group to `logs` after every start would flood it (AGENTS.md, rule 9; D-RM-15).
+                self._announced.add(ev.chat_id)
+                log.info("chat without a role: %s (%s), intake policy: %s", ev.chat_title or "", ev.chat_id,
+                         src.policy)
+            command = self._any_chat_command(ev, src.policy, rt)
         if src.policy == "presence" and command is None:
             return
 
@@ -171,6 +177,16 @@ class Gateway:
             "dedup_key": dedup_key, "dedup_exact": dedup_exact,
         }
         await self._store_record(rec)
+
+    def _logs_chat_command(self, ev: RawEvent, rt: Runtime) -> Extraction | None:
+        """A command of `logs_chat_commands` written in the group logs by a person (not a pool account)."""
+        if (not self.logs_chat_commands or ev.chat_id != rt.config.service_chats.logs or ev.kind != "new"
+                or ev.anonymous or ev.sender_id in self.pool_user_ids):
+            return None
+        if not (ev.text or "").lstrip().startswith("/"):
+            return None
+        ex = extract(ev.text, rt.manifest)
+        return ex if ex.command is not None and ex.command["name"] in self.logs_chat_commands else None
 
     def _any_chat_command(self, ev: RawEvent, policy: str, rt: Runtime) -> Extraction | None:
         if policy not in ("presence", "meta") or not self.any_chat_commands or ev.kind != "new" or ev.anonymous:

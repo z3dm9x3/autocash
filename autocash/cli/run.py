@@ -32,7 +32,8 @@ from autocash.modules.api import Module
 from autocash.modules.autosup.AS_module import AutosupModule
 from autocash.modules.demo.module import DemoModule
 from autocash.modules.deposits.module import DepositsModule
-from autocash.modules.players.PL_module import PlayersModule
+from autocash.modules.orders.orders_module import OrdersModule
+from autocash.modules.players.players_module import PlayersModule
 from autocash.modules.role_manager.RM_module import RoleManagerModule
 from autocash.modules.ticket_system.TS_module import TicketSystemModule
 
@@ -44,7 +45,7 @@ ROOT = Path(__file__).resolve().parents[2]
 AVAILABLE: dict[str, type[Module]] = {"role_manager": RoleManagerModule, "autosup": AutosupModule,
                                       "ticket_system": TicketSystemModule, "demo": DemoModule,
                                       "players": PlayersModule, "deposits": DepositsModule,
-                                      "reactions": ReactionsModule}
+                                      "reactions": ReactionsModule, "orders": OrdersModule}
 
 
 def build_modules(app_config_modules: dict[str, object]) -> list[Module]:

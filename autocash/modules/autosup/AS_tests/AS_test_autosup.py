@@ -9,8 +9,8 @@ import pytest
 
 from autocash.core.app import App
 from autocash.modules.autosup.AS_module import AutosupModule
-from autocash.modules.players import PL_store
-from autocash.modules.players.PL_module import PlayersModule
+from autocash.modules.players import players_store
+from autocash.modules.players.players_module import PlayersModule
 from autocash.modules.role_manager.RM_module import RoleManagerModule
 from tests.conftest import ACCOUNT, KASSA, KASSA2, LOGS, PLAYER, AppFactory
 from tests.fake_telegram.server import FakeMessage, FakeTelegram
@@ -54,8 +54,8 @@ def sent_to(fake: FakeTelegram, user: int) -> list[str]:
 
 
 async def player_of(app: App, tg_id: int) -> tuple[Any, list[str]]:
-    player = await PL_store.player_of(app.db.pool, "tg", tg_id)
-    return player, await PL_store.mels_of_tg(app.db.pool, tg_id)
+    player = await players_store.player_of(app.db.pool, "tg", tg_id)
+    return player, await players_store.mels_of_tg(app.db.pool, tg_id)
 
 
 async def test_first_contact_asks_takes_the_next_id_and_pins_it(app_factory: AppFactory, fake: FakeTelegram,
