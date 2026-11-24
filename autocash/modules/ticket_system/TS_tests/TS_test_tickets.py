@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -25,10 +26,15 @@ ADMIN = 8001
 
 
 @pytest.fixture
-def cfg(config: dict[str, Any]) -> dict[str, Any]:
+def cfg(config: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
     # A long first minute: a trigger must type the ticket at once, not when the minute ends.
     # The ID request of Autosup comes much later, so it does not get in the way.
-    config["modules"] = {"role_manager": {}, "players": {}, "autosup": {"config": {"grace_s": 600.0}},
+    # The account works all day (AS, D-AS-8): no away reply, whatever the time of the run.
+    folder = tmp_path / "accounts" / f"acc_{ACCOUNT} test"
+    folder.mkdir(parents=True)
+    (folder / "account.yaml").write_text('work_hours: "00:00-24:00"\n', encoding="utf-8")
+    config["modules"] = {"role_manager": {}, "players": {},
+                         "autosup": {"config": {"grace_s": 600.0, "accounts_dir": str(tmp_path / "accounts")}},
                          "ticket_system": {"config": {"burst_s": 60.0}}}
     return config
 

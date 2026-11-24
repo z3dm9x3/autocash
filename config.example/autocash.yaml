@@ -90,6 +90,8 @@ modules:
   autosup:                             # talks to players: the ID; hands messages to TS, logs tickets (AS_readme.md)
     config:
       grace_s: 60
+      accounts_dir: accounts           # working hours of each account: accounts/acc_<TGID> …/account.yaml
+      away_text: "Здравствуйте! Сейчас нерабочее время. Мы ответим вам в рабочие часы."  # out of hours
   ticket_system:                       # tickets of players, C-ticket D / WW / Q; writes nothing (TS_readme.md)
     config:
       burst_s: 60                      # the first trigger within this minute types the ticket, none -> Q

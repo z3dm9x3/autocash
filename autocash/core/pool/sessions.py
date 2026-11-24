@@ -171,7 +171,8 @@ class SessionWatcher:
         self._failed: dict[str, float] = {}  # file -> mtime of the version that could not be used
         self._task: asyncio.Task[None] | None = None
 
-    async def scan(self) -> None:
+    async def scan(self, announce: bool = True) -> None:
+        """`announce`: accounts found now join the running pool (D-AS-8); the first scan at start does not."""
         present = {p.name: p for p in sorted(self.directory.glob(f"*{SUFFIX}"))} if self.directory.is_dir() else {}
         for name in [n for n in self._known if n not in present]:
             client, lock = self._known.pop(name)
@@ -190,7 +191,7 @@ class SessionWatcher:
                     raise SessionError("the session is used by another process")
                 data = await asyncio.to_thread(read_session, path, self._key)
                 client = self._factory(data)
-                await self._pool.add(client, data.name)
+                await self._pool.add(client, data.name, announce=announce)
             except (SessionError, PoolFull, OSError) as exc:
                 lock.release()
                 self._failed[name] = mtime
@@ -200,7 +201,7 @@ class SessionWatcher:
             log.warning("session file %s: the account joins the pool", name)
 
     async def start(self) -> None:
-        await self.scan()
+        await self.scan(announce=False)
         self._task = asyncio.create_task(self._run(), name="session-watcher")
 
     async def _run(self) -> None:

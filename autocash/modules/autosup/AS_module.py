@@ -15,6 +15,10 @@ Called by the protocols of Role Manager, works in the background, private dialog
   player (not of the staff) is handed to TS (`TS_api.receive`); the results of TS come back as the
   protocols ticket.d | ticket.ww | ticket.q, and Autosup writes each to the group `logs`. This does not
   depend on /as on|off (that switch is about writing to players).
+- working hours of each account (AS_accounts, D-AS-8): out of them a player (not staff) gets only the away
+  reply, once per non-working period; the ID is still taken and pinned, tickets go on; "Пришлите ваш ID" is
+  not sent. The schedules are read at start and when an account is added to the running pool
+  (the protocol pool.account_added).
 Every write to Telegram is an Outbox task (send, pin); nothing is written to Telegram directly.
 """
 
@@ -29,9 +33,12 @@ from pydantic import BaseModel
 
 from autocash.core.commands.rights import can_run, deny
 from autocash.core.outbox.OBX_tasks import OutboundDraft
+from autocash.core.pool.pool import ACCOUNT_ADDED
 from autocash.core.record import MessageRecord
 from autocash.core.trace.codes import Reason, Status
 from autocash.modules.api import Context, Event, Module, Services
+from autocash.modules.autosup import AS_accounts
+from autocash.modules.autosup.AS_accounts import Schedule, ScheduleError
 from autocash.modules.autosup.AS_ids import FoundId, find_id
 from autocash.modules.players import players_store
 from autocash.modules.role_manager.RM_module import SERVICE_USERS
@@ -53,11 +60,14 @@ class ASConfig(BaseModel):
     history_days: float = 180.0
     # The record in `logs` of a typed ticket (D-TS-3). Fields: {id} {ticket} {player} {account} {trigger}.
     ticket_log_text: str = "TS: тикет #{id} — {ticket} · игрок {player} · аккаунт {account} · триггер: {trigger}"
+    # Out of the working hours of the account (D-AS-8). OPEN-QUESTION: the text of the customer comes later.
+    away_text: str = "Здравствуйте! Сейчас нерабочее время. Мы ответим вам в рабочие часы."
+    accounts_dir: str = "accounts"  # folders of the accounts with account.yaml (AS_accounts)
 
 
 class AutosupModule(Module):
     name: ClassVar[str] = NAME
-    protocols: ClassVar[list[str]] = ["contact.first", "contact.second", *TS_api.PROTOCOLS]
+    protocols: ClassVar[list[str]] = ["contact.first", "contact.second", *TS_api.PROTOCOLS, ACCOUNT_ADDED]
     private_dialogs: ClassVar[bool] = True
     subscriptions: ClassVar[list[str]] = ["command.as"]
     commands: ClassVar[list[str]] = ["as"]
@@ -68,6 +78,7 @@ class AutosupModule(Module):
 
     def __init__(self) -> None:
         self.enabled = True  # the switch /as on|off (as_settings), read at start
+        self.schedules: dict[int, Schedule] = {}  # account -> working hours (D-AS-8); missing: the default
 
     @property
     def svc(self) -> Services:
@@ -84,9 +95,60 @@ class AutosupModule(Module):
             raise RuntimeError("Autosup needs the module players: add `players: {}` to `modules` of the configuration")
         self.enabled = bool(await self.svc.db.pool.fetchval("SELECT enabled FROM as_settings WHERE id = 1"))
         log.info("AS: Autosup is %s", "on" if self.enabled else "off")
+        for account_id in AS_accounts.account_ids(Path(self.cfg().accounts_dir)):
+            self._read_schedule(account_id)
+
+    # ---- working hours of the accounts (D-AS-8) ----------------------------------------------------
+    def schedule(self, account_id: int) -> Schedule:
+        return self.schedules.get(account_id, AS_accounts.DEFAULT)
+
+    def _read_schedule(self, account_id: int) -> tuple[Schedule, str]:
+        """Read account.yaml of the account; a broken file keeps the default and is reported to logs."""
+        try:
+            schedule, path = AS_accounts.load(Path(self.cfg().accounts_dir), account_id)
+        except ScheduleError as exc:
+            self.schedules.pop(account_id, None)
+            self.svc.notify(f"{PREFIX}: параметры аккаунта {account_id} не прочитаны — {exc}; "
+                            f"расписание по умолчанию: {AS_accounts.DEFAULT.describe()}")
+            return AS_accounts.DEFAULT, "по умолчанию: файл с ошибкой"
+        self.schedules[account_id] = schedule
+        note = "" if path is not None else "по умолчанию: нет файла account.yaml"
+        log.info("AS: account %s works %s%s", account_id, schedule.describe(), f" ({note})" if note else "")
+        return schedule, note
+
+    async def _account_added(self, account_id: int, data: dict[str, Any]) -> None:
+        schedule, note = self._read_schedule(account_id)
+        name = data.get("name") or account_id
+        self.svc.notify(f"{PREFIX}: в пул добавлен аккаунт {name} ({account_id}), часы работы: "
+                        f"{schedule.describe()}" + (f" ({note})" if note else ""))
+
+    async def _away(self, rec: MessageRecord) -> None:
+        """Out of the working hours of the account: the away reply, once per non-working period."""
+        tg_id = int(rec.sender_id or 0)
+        if rec.source == "backfill" or tg_id in SERVICE_USERS:
+            return
+        if self.svc.runtime().directory.user_role(tg_id) in STAFF:
+            return  # staff out of hours: another action, not defined yet (customer, 2026-11-24)
+        schedule = self.schedule(rec.account_id)
+        at = datetime.fromtimestamp(rec.msg_date, UTC)
+        if schedule.is_open(at):
+            return
+        since = schedule.closed_since(at)
+        first = await self.svc.db.pool.fetchval(
+            "INSERT INTO as_away (tg_id, account_id, sent_at) VALUES ($1, $2, $3) ON CONFLICT (tg_id, account_id) "
+            "DO UPDATE SET sent_at = EXCLUDED.sent_at WHERE as_away.sent_at < $4 RETURNING 1",
+            tg_id, rec.account_id, at, since)
+        if not first:
+            return  # already answered in this non-working period
+        await self._outbox(OutboundDraft(chat_id=tg_id, text=self.cfg().away_text, rule="away", kind="client_reply",
+                                         via_account=rec.account_id,
+                                         dedup_key=f"{NAME}:away:{tg_id}:{rec.account_id}:{int(since.timestamp())}"))
 
     # ---- protocols (D-RM-12) ---------------------------------------------------------------------
     async def on_protocol(self, protocol: str, subject: int, data: dict[str, Any]) -> None:
+        if protocol == ACCOUNT_ADDED:
+            await self._account_added(subject, data)
+            return
         if protocol in TS_api.PROTOCOLS:
             await self._ticket_log(subject, data)
             return
@@ -161,6 +223,8 @@ class AutosupModule(Module):
         if rec.chat_id <= 0 or rec.sender_id != rec.chat_id or rec.origin != "external" or rec.event != "new":
             return
         await self._to_ts(rec)
+        if self.enabled:
+            await self._away(rec)
         if not rec.text or not self.enabled:
             return
         row = await ctx.fetchrow(
@@ -244,8 +308,10 @@ class AutosupModule(Module):
         waiting = await self.svc.db.pool.fetchval(
             "SELECT count(*) FROM as_dialogs WHERE state IN ('grace', 'awaiting_id')")
         done = await self.svc.db.pool.fetchval("SELECT count(*) FROM as_dialogs WHERE state = 'done'")
+        hours = "\n".join(f"Аккаунт {a}: {s.describe()}" for a, s in sorted(self.schedules.items()))
+        hours += f"\nОстальные аккаунты: {AS_accounts.DEFAULT.describe()}"
         ctx.reply(f"Autosup {'включён' if self.enabled else 'выключен'}. Ждут ID: {waiting}, получено ID: {done}.\n"
-                  "/as on — включить, /as off — выключить.", rule="command.as", kind="command_reply")
+                  f"{hours}\n/as on — включить, /as off — выключить.", rule="command.as", kind="command_reply")
 
     # ---- the player ------------------------------------------------------------------------------
     async def _register(self, tg_id: int, account_id: int, contact: str, found_in: str, msg_id: int,
@@ -302,6 +368,11 @@ class AutosupModule(Module):
                 msg_id, fid = found
                 contact = await pool.fetchval("SELECT contact FROM as_dialogs WHERE tg_id = $1", tg_id)
                 await self._register(tg_id, account_id, str(contact), "reply", msg_id, fid)
+            elif not self.schedule(account_id).is_open(datetime.now(UTC)):
+                # Out of hours the request is not sent; an ID written later is still taken (D-AS-8).
+                await pool.execute(
+                    "UPDATE as_dialogs SET state = 'awaiting_id', asked_at = contact_at, ask_skipped_at = now(), "
+                    "updated_at = now() WHERE tg_id = $1 AND state = 'grace'", tg_id)
             else:
                 await self._ask(tg_id, account_id)
         expired = await pool.execute(

@@ -9,6 +9,7 @@ tells its listeners (scheduler, Output) about every change so duties move within
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -38,6 +39,11 @@ ON CONFLICT (account_id) DO UPDATE SET name = EXCLUDED.name, kind = EXCLUDED.kin
     state_since = now(), last_error = EXCLUDED.last_error
 """
 _STATE_LOG = "INSERT INTO account_state_log (account_id, old_state, new_state, reason) VALUES ($1, $2, $3, $4)"
+# An account added to the running pool (D-AS-8): the protocol pool.account_added, once per account, in the same
+# transaction as its first record; modules that work per account (Autosup) read its parameters then.
+ACCOUNT_ADDED = "pool.account_added"
+_ADDED = ("INSERT INTO protocol_runs (protocol, subject, data) VALUES ($1, $2, $3::jsonb) "
+          "ON CONFLICT (protocol, subject) DO NOTHING RETURNING id")
 _PAUSE = """
 INSERT INTO flood_pauses (account_id, method, paused_until) VALUES ($1, $2, to_timestamp($3::float8))
 ON CONFLICT (account_id, method) DO UPDATE SET paused_until = EXCLUDED.paused_until, created_at = now()
@@ -65,6 +71,7 @@ class Account:
     state_since: float = field(default_factory=time.time)
     started: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task[None] | None = None
+    announce: bool = False  # added to the running pool: its first active state starts pool.account_added
 
 
 class PoolFull(RuntimeError):
@@ -87,6 +94,7 @@ class AccountPool:
         self.intake = True
         self.reconcilers: list[Reconciler] = []
         self.changed_at = time.monotonic()
+        self.on_account_added: Callable[[], None] = lambda: None  # the App wakes the protocols
         self._seen_pts: dict[int, int] = {}
         self._dirty_pts: set[int] = set()
         self._pts_snapshot: dict[int, int] = {}
@@ -186,8 +194,12 @@ class AccountPool:
         self._zero_coverage = zero
 
     # ---- adding and removing accounts ------------------------------------------------------
-    async def add(self, client: TelegramClient, name: str = "") -> Account:
-        """Connect an account and put it under its own supervisor. Returns after the first attempt."""
+    async def add(self, client: TelegramClient, name: str = "", *, announce: bool = False) -> Account:
+        """Connect an account and put it under its own supervisor. Returns after the first attempt.
+
+        `announce`: the account is added to the running pool (a new session file, not the start): when it
+        first becomes active the protocol pool.account_added is started (D-AS-8).
+        """
         if len(self.live()) >= MAX_ACCOUNTS:
             raise PoolFull(f"the pool is limited to {MAX_ACCOUNTS} accounts")
         cfg = self._store.current.config.pool
@@ -196,7 +208,7 @@ class AccountPool:
             concurrency=cfg.api_concurrency, rate_per_s=cfg.api_rate_per_s.get(kind, 1.0),
             backfill_share=cfg.backfill_share, flood_slowdown=cfg.flood_slowdown,
             flood_recovery_s=cfg.flood_recovery_s,
-        ))
+        ), announce=announce)
         acc.limiter.on_pause = partial(self._on_pause, acc)
         acc.limiter.gate = partial(self._gate, acc)
         acc.limiter.on_flood = partial(self._flood, acc)
@@ -314,11 +326,17 @@ class AccountPool:
         args = (acc.account_id, acc.name, acc.kind, str(new), reason)
         log_args = (acc.account_id, str(old), str(new), reason)
 
-        async def write(conn: asyncpg.Connection) -> None:
+        announce = acc.announce and new is AccountState.ACTIVE
+        if announce:
+            acc.announce = False
+        added = json.dumps({"name": acc.name, "kind": acc.kind}, ensure_ascii=False)
+
+        async def write(conn: asyncpg.Connection) -> bool:
             await conn.execute(_ACCOUNT, *args)
             await conn.execute(_STATE_LOG, *log_args)
+            return bool(announce and await conn.fetchval(_ADDED, ACCOUNT_ADDED, args[0], added))
 
-        self._writer.submit(write)
+        self._writer.submit(write, after=lambda started: self.on_account_added() if started else None)
         if new is AccountState.RESTRICTED:
             self._alarm(f"Аккаунт {acc.name} ({acc.account_id}) ограничен на отправку ({reason}); приём продолжается",
                         acc.account_id)

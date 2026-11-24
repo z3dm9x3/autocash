@@ -7,6 +7,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from autocash.accounts import ACCOUNTS_DIR, ENV_FILE, find_account  # noqa: E402
+from autocash.modules.autosup.AS_accounts import FILE as PARAMS_FILE  # noqa: E402
+from autocash.modules.autosup.AS_accounts import TEMPLATE as PARAMS_TEMPLATE  # noqa: E402
 from autocash.tg_client import connect  # noqa: E402
 
 INVALID_NAME_CHARS = re.compile(r'[\\/:*?"<>|]')
@@ -102,6 +104,9 @@ def main() -> int:
     folder.mkdir(parents=True)
     write_env(folder, values)
     print(f"Создано: accounts/{folder_name}/{ENV_FILE}")
+    # Parameters of the account (Autosup: working hours, D-AS-8); read when the account joins the pool.
+    (folder / PARAMS_FILE).write_text(PARAMS_TEMPLATE, encoding="utf-8")
+    print(f"Создано: accounts/{folder_name}/{PARAMS_FILE} — часы работы по умолчанию: ежедневно 11:00–23:00")
 
     if yes("Проверить вход сейчас? (код придёт в Telegram)"):
         try:

@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from autocash.core.app import App
-from autocash.modules.autosup.AS_module import AutosupModule
+from autocash.modules.autosup import AS_accounts
+from autocash.modules.autosup.AS_module import ASConfig, AutosupModule
 from autocash.modules.players import players_store
 from autocash.modules.players.players_module import PlayersModule
 from autocash.modules.role_manager.RM_module import RoleManagerModule
-from tests.conftest import ACCOUNT, KASSA, KASSA2, LOGS, PLAYER, AppFactory
+from tests.conftest import ACCOUNT, CASHER, KASSA, KASSA2, LOGS, PLAYER, AppFactory
 from tests.fake_telegram.server import FakeMessage, FakeTelegram
 from tests.helpers import sent_by, started, wait_for
 
@@ -24,10 +27,23 @@ ADMIN = 8001
 TECH = KASSA2  # a group given the role tech: /as works only there
 
 
+def accounts_dir(root: Path, hours: dict[int, str]) -> str:
+    """Folders of the accounts with account.yaml (D-AS-8): account -> its content."""
+    for account_id, text in hours.items():
+        folder = root / f"acc_{account_id} test"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "account.yaml").write_text(text, encoding="utf-8")
+    return str(root)
+
+
+ALL_DAY = 'work_hours: "00:00-24:00"\n'
+
+
 @pytest.fixture
-def cfg(config: dict[str, Any]) -> dict[str, Any]:
-    # The 60 s of grace are 1 s in tests.
-    config["modules"] = {"role_manager": {}, "players": {}, "autosup": {"config": {"grace_s": 1.0}}}
+def cfg(config: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
+    # The 60 s of grace are 1 s in tests; the account works all day, so the tests do not depend on the clock.
+    config["modules"] = {"role_manager": {}, "players": {}, "autosup": {"config": {
+        "grace_s": 1.0, "accounts_dir": accounts_dir(tmp_path / "accounts", {ACCOUNT: ALL_DAY})}}}
     return config
 
 
@@ -182,3 +198,74 @@ async def test_switch_as_on_off_only_in_a_tech_group(app_factory: AppFactory, fa
     assert len(sent_by(fake, TECH)) == before
     assert await ask(TECH, "/as on") == "Autosup включён."
     assert (await ask(TECH, "/as")).startswith("Autosup включён. Ждут ID: 0")
+
+
+# ---- working hours of the accounts (D-AS-8) ---------------------------------------------------------------
+def closed_today() -> str:
+    """account.yaml of an account that does not work today (whatever the time of the run)."""
+    today = datetime.now(AS_accounts.MSK).weekday()
+    days = ", ".join(d for i, d in enumerate(AS_accounts.DAYS) if i != today)
+    return f'work_hours: "11:00-17:00"\nwork_days: [{days}]\n'
+
+
+def test_the_schedule_of_an_account() -> None:
+    s = AS_accounts.parse({"work_hours": "11:00-17:00", "work_days": ["пн", "вт", "ср", "чт", "пт"]})
+    assert s.describe() == "пн–пт 11:00–17:00"
+    msk = AS_accounts.MSK
+    assert s.is_open(datetime(2026, 11, 23, 11, 0, tzinfo=msk))  # Monday
+    assert not s.is_open(datetime(2026, 11, 23, 17, 0, tzinfo=msk))
+    assert not s.is_open(datetime(2026, 11, 22, 12, 0, tzinfo=msk))  # Sunday
+    # Friday evening, the weekend and Monday morning are one non-working period.
+    assert s.closed_since(datetime(2026, 11, 23, 9, 0, tzinfo=msk)) == datetime(2026, 11, 20, 17, 0, tzinfo=msk)
+    assert AS_accounts.parse(None) == AS_accounts.DEFAULT
+    assert AS_accounts.DEFAULT.describe() == "ежедневно 11:00–23:00"
+    assert AS_accounts.parse({"work_hours": "00:00-24:00"}).is_open(datetime(2026, 11, 23, 23, 59, tzinfo=msk))
+    for wrong in ({"work_hours": "22:00-02:00"}, {"work_hours": "11-17"}, {"work_days": ["пн", "mon"]}):
+        with pytest.raises(AS_accounts.ScheduleError):
+            AS_accounts.parse(wrong)
+
+
+async def test_out_of_hours_only_the_away_reply_and_the_id_is_still_taken(
+        app_factory: AppFactory, fake: FakeTelegram, cfg: dict[str, Any], tmp_path: Path) -> None:
+    cfg["modules"]["autosup"]["config"]["accounts_dir"] = accounts_dir(tmp_path / "closed", {ACCOUNT: closed_today()})
+    fake.add_chat(CASHER, "private", "casher", members=(ACCOUNT,))
+    app = await as_app(app_factory, fake, cfg)
+    await app.db.pool.execute("INSERT INTO rm_users (tg_id, role) VALUES ($1, 'casher')", CASHER)
+    app.store.directory.set_user(CASHER, "casher")
+    away = ASConfig().away_text
+    fake.post(NEW, NEW, "Здравствуйте, вопрос по депозиту")
+    await wait_for(lambda: any(away in t for t in sent_to(fake, NEW)), what="the away reply")
+    fake.post(NEW, NEW, "ау")  # the same non-working period: no second reply
+    await app.idle()
+    await asyncio.sleep(1.5)  # the grace ends: out of hours the request of the ID is not sent
+    await app.idle()
+    assert len(sent_to(fake, NEW)) == 1 and ASK not in sent_to(fake, NEW)
+    row = await app.db.pool.fetchrow("SELECT state, ask_skipped_at FROM as_dialogs WHERE tg_id = $1", NEW)
+    assert row["state"] == "awaiting_id" and row["ask_skipped_at"] is not None
+    reply = fake.post(NEW, NEW, "1234567890")  # the ID is taken and pinned at any time
+    await wait_for(lambda: fake.pins, what="the pin")
+    assert fake.pins == [(ACCOUNT, NEW, reply.id_for(ACCOUNT))]
+    assert (await player_of(app, NEW))[1] == ["1234567890"]
+    fake.post(CASHER, CASHER, "добрый вечер")  # staff: nothing is sent
+    await app.idle()
+    assert sent_to(fake, CASHER) == []
+
+
+async def test_an_account_added_to_the_running_pool_has_its_parameters_read(
+        app_factory: AppFactory, fake: FakeTelegram, cfg: dict[str, Any], tmp_path: Path) -> None:
+    second = 112
+    hours = 'work_hours: "11:00-17:00"\nwork_days: [пн, вт, ср, чт, пт]\n'
+    cfg["modules"]["autosup"]["config"]["accounts_dir"] = accounts_dir(tmp_path / "accounts2",
+                                                                         {ACCOUNT: ALL_DAY, second: hours})
+    app = await as_app(app_factory, fake, cfg)
+    module = next(m for m in app.modules if isinstance(m, AutosupModule))
+    assert module.schedule(ACCOUNT).describe() == "ежедневно 00:00–24:00"  # read at start
+    assert not any("в пул добавлен" in t for _, t in sent_by(fake, LOGS))  # accounts of the start: no protocol
+    (tmp_path / "accounts2" / f"acc_{second} test" / "account.yaml").write_text(
+        'work_hours: "10:00-12:00"\n', encoding="utf-8")  # changed before it joins: read when it joins
+    await app.pool.add(fake.client(second), "второй", announce=True)
+    await wait_for(lambda: any("в пул добавлен аккаунт второй (112), часы работы: ежедневно 10:00–12:00" in t
+                               for _, t in sent_by(fake, LOGS)), what="the record of the new account")
+    assert module.schedule(second).describe() == "ежедневно 10:00–12:00"
+    runs = await app.db.pool.fetchval("SELECT count(*) FROM protocol_runs WHERE protocol = 'pool.account_added'")
+    assert runs == 1
