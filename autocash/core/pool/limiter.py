@@ -132,6 +132,30 @@ class AccountLimiter:
             self._running -= 1
             self._kick()
 
+    async def express(self, method: str, fn: Callable[[], Awaitable[T]]) -> T:
+        """A call of the express lane (D-QK-2): no waiting for the tempo or for a free slot.
+
+        Only a pause of Telegram (FloodWait) stops it. While it runs it holds a slot, so the regular
+        calls of the account wait for it; the tempo then counts from its end: the regular calls move
+        later, never the express one. Calls of the lane may run in parallel (delete + send)."""
+        until = self.paused_until(method)
+        if until is not None:
+            raise FloodWait(max(until - time.time(), 0.0), method)
+        self._running += 1
+        self.calls += 1
+        try:
+            return await fn()
+        except FloodWait as exc:
+            self.pause(method, exc.seconds)
+            if self.on_flood is not None:
+                self.on_flood(method, exc.seconds)
+            raise
+        finally:
+            self._running -= 1
+            now = asyncio.get_event_loop().time()
+            self._next_at = max(self._next_at, now + self._interval(COMMAND_REPLY))
+            self._kick()
+
     def _kick(self) -> None:
         """Grant slots to waiters in priority order; never blocks."""
         if self._timer is not None:

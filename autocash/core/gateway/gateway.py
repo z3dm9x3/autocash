@@ -75,6 +75,12 @@ class Gateway:
         self.any_chat_commands: set[str] = set()
         # Commands accepted in the group `logs`; nothing else of it is read (FT-2.4, D-ORDERS-6).
         self.logs_chat_commands: set[str] = set()
+        # Express hooks (D-QK-1): called synchronously with every live new message BEFORE it is buffered;
+        # (event, origin, received). A hook must not block: it starts its own task when it acts.
+        self.express_hooks: list[Callable[[RawEvent, str, float], None]] = []
+        # Draft hooks (D-QK2-1): every change of a cloud draft of a private dialog, (event, received);
+        # a draft is never stored and goes nowhere else. Same rule: no blocking.
+        self.draft_hooks: list[Callable[[RawEvent, float], None]] = []
         self.duplicates = 0
         self.rejected = 0
         self.ignored = 0
@@ -95,6 +101,15 @@ class Gateway:
     async def on_event(self, ev: RawEvent) -> None:
         """Entry point for every update. Must not await before the record is enqueued."""
         received = time.time()
+        if self.express_hooks and ev.kind == "new" and ev.source == "live" and ev.chat_id is not None:
+            self._express(ev, received)
+        if ev.kind == "draft":
+            for hook in self.draft_hooks:
+                try:
+                    hook(ev, received)
+                except Exception:
+                    log.exception("draft hook failed (chat %s)", ev.chat_id)
+            return
         rt = self._store.current
         trace_id = str(uuid.uuid4())
 
@@ -177,6 +192,19 @@ class Gateway:
             "dedup_key": dedup_key, "dedup_exact": dedup_exact,
         }
         await self._store_record(rec)
+
+    def _express(self, ev: RawEvent, received: float) -> None:
+        """The express lane (D-QK-1): no await, nothing but the update itself and memory."""
+        assert ev.chat_id is not None
+        origin = "external"
+        if ev.sender_id is not None and ev.sender_id in self.pool_user_ids:
+            own = self._own.is_own(ev.chat_id, text_hash(clean_markup(ev.text)[0]), ev.msg_id)
+            origin = "system" if own else "human"
+        for hook in self.express_hooks:
+            try:
+                hook(ev, origin, received)
+            except Exception:
+                log.exception("express hook failed (chat %s, message %s)", ev.chat_id, ev.msg_id)
 
     def _logs_chat_command(self, ev: RawEvent, rt: Runtime) -> Extraction | None:
         """A command of `logs_chat_commands` written in the group logs by a person (not a pool account)."""

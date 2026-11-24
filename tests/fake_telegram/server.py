@@ -66,6 +66,7 @@ class FakeTelegram:
         self.sent: list[tuple[int, int, str, int]] = []  # (account_id, chat_id, text, msg_id)
         self.pins: list[tuple[int, int, int]] = []  # (account_id, chat_id, msg_id)
         self.deletes: list[tuple[int, int, int]] = []  # (account_id, chat_id, msg_id) actually deleted
+        self.drafts: dict[tuple[int, int], str] = {}  # (account_id, chat_id) -> cloud draft
         self.random_ids: dict[tuple[int, int], int] = {}
         # account -> queued failures: (method or None for any call, exception)
         self.failures: dict[int, deque[tuple[str | None, Exception]]] = defaultdict(deque)
@@ -151,6 +152,16 @@ class FakeTelegram:
             if client is None or client.handler is None or not client.online or client.deaf:
                 continue
             self._track(client.handler(self._event(kind, msg, chat, account_id, chat.pts)))
+
+    def set_draft(self, account_id: int, chat_id: int, text: str, reply_to: int | None = None) -> None:
+        """The account's client saved a cloud draft in a private dialog: the update reaches the account."""
+        self.drafts[(account_id, chat_id)] = text
+        client = self.clients.get(account_id)
+        if client is None or client.handler is None or not client.online:
+            return
+        self._track(client.handler(RawEvent(kind="draft", account_id=account_id, msg_id=0, chat_id=chat_id,
+                                            chat_kind="private", sender_id=account_id, date=datetime.now(UTC),
+                                            text=text, reply_to=reply_to)))
 
     def post(self, chat_id: int, sender_id: int | None, text: str, **kw: Any) -> FakeMessage:
         chat = self.chats[chat_id]
@@ -327,9 +338,13 @@ class FakeClient:
         if self._gone is not None:
             await self._gone
 
-    async def send_message(self, chat_id: int, text: str, *, random_id: int, reply_to: int | None = None) -> int:
+    async def send_message(self, chat_id: int, text: str, *, random_id: int, reply_to: int | None = None,
+                           clear_draft: bool = False) -> int:
         await asyncio.sleep(0)
-        return self.server.send(self.account_id, chat_id, text, random_id, reply_to)
+        msg_id = self.server.send(self.account_id, chat_id, text, random_id, reply_to)
+        if clear_draft and self.server.drafts.get((self.account_id, chat_id)):
+            self.server.set_draft(self.account_id, chat_id, "")  # Telegram empties it and says so
+        return msg_id
 
     async def pin_message(self, chat_id: int, msg_id: int) -> None:
         await asyncio.sleep(0)

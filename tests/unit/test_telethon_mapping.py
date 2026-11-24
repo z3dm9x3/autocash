@@ -8,7 +8,7 @@ from typing import Any
 
 from telethon import errors, types
 
-from autocash.core.telegram.telethon_client import error_code, message_event, sent_message_id
+from autocash.core.telegram.telethon_client import draft_event, error_code, message_event, sent_message_id
 
 ME = 111
 DATE = datetime(2026, 11, 14, 10, 0, tzinfo=UTC)
@@ -93,3 +93,16 @@ def test_sent_message_id() -> None:
     updates = SimpleNamespace(
         updates=[types.UpdateMessageID(id=1, random_id=5), types.UpdateMessageID(id=16, random_id=99)])
     assert sent_message_id(updates, 99) == 16
+
+
+def test_draft_of_a_private_dialog() -> None:
+    """QuickCast2 (D-QK2-1): UpdateDraftMessage of a private dialog -> RawEvent "draft"; others skipped."""
+    draft = types.DraftMessage(message="зд\\", date=DATE, reply_to=types.InputReplyToMessage(reply_to_msg_id=5))
+    ev = draft_event(ME, types.UpdateDraftMessage(peer=types.PeerUser(5001), draft=draft))
+    assert ev is not None
+    assert (ev.kind, ev.chat_id, ev.chat_kind, ev.sender_id, ev.text, ev.reply_to) == (
+        "draft", 5001, "private", ME, "зд\\", 5)
+    empty = draft_event(ME, types.UpdateDraftMessage(peer=types.PeerUser(5001), draft=types.DraftMessageEmpty()))
+    assert empty is not None and empty.text == ""
+    assert draft_event(ME, types.UpdateDraftMessage(peer=types.PeerUser(ME), draft=draft)) is None  # Saved
+    assert draft_event(ME, types.UpdateDraftMessage(peer=types.PeerChannel(1000000001), draft=draft)) is None

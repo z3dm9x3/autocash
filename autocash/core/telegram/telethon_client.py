@@ -123,6 +123,21 @@ def message_event(kind: EventKind, account_id: int, msg: Any, chat_title: str | 
     )
 
 
+def draft_event(account_id: int, update: Any) -> RawEvent | None:
+    """A RawEvent "draft" from UpdateDraftMessage: private dialogs only (not Saved Messages, not topics).
+    An emptied draft comes with text "". Pure: uses only the fields of the update."""
+    peer = getattr(update, "peer", None)
+    if not isinstance(peer, types.PeerUser) or peer.user_id == account_id or getattr(update, "top_msg_id", None):
+        return None
+    draft = getattr(update, "draft", None)
+    text = str(getattr(draft, "message", "") or "") if isinstance(draft, types.DraftMessage) else ""
+    reply = getattr(draft, "reply_to", None)
+    return RawEvent(kind="draft", account_id=account_id, msg_id=0, chat_id=int(peer.user_id), chat_kind="private",
+                    sender_id=account_id, date=getattr(draft, "date", None), text=text,
+                    reply_to=getattr(reply, "reply_to_msg_id", None),
+                    media_type="draft_media" if getattr(draft, "media", None) is not None else None)
+
+
 def sent_message_id(result: Any, random_id: int) -> int:
     if isinstance(result, types.UpdateShortSentMessage):
         return int(result.id)
@@ -214,6 +229,7 @@ class TelethonClient:
             client.add_event_handler(self._on_edit, events.MessageEdited())
             client.add_event_handler(self._on_delete, events.MessageDeleted())
             client.add_event_handler(self._on_action, events.ChatAction())
+            client.add_event_handler(self._on_draft, events.Raw(types.UpdateDraftMessage))
 
     async def stop(self) -> None:
         await self._client.disconnect()
@@ -272,6 +288,12 @@ class TelethonClient:
         await self._emit(RawEvent(kind=kind, account_id=self.account_id, msg_id=0, chat_id=event.chat_id,
                                   chat_title=self._title(event)))
 
+    async def _on_draft(self, update: Any) -> None:
+        """The cloud draft of a private dialog changed (QuickCast2, D-QK2-1); other peers are skipped."""
+        event = draft_event(self.account_id, update)
+        if event is not None:
+            await self._emit(event)
+
     # ---- active calls --------------------------------------------------------------------
     async def _call(self, method: str, awaitable: Awaitable[T]) -> T:
         try:
@@ -303,17 +325,19 @@ class TelethonClient:
             pass
         return await client.get_input_entity(chat_id)
 
-    async def send_message(self, chat_id: int, text: str, *, random_id: int, reply_to: int | None = None) -> int:
-        result = await self._call("messages.sendMessage", self._send(chat_id, text, random_id, reply_to))
+    async def send_message(self, chat_id: int, text: str, *, random_id: int, reply_to: int | None = None,
+                           clear_draft: bool = False) -> int:
+        result = await self._call("messages.sendMessage", self._send(chat_id, text, random_id, reply_to, clear_draft))
         return sent_message_id(result, random_id)
 
-    async def _send(self, chat_id: int, text: str, random_id: int, reply_to: int | None) -> Any:
+    async def _send(self, chat_id: int, text: str, random_id: int, reply_to: int | None, clear_draft: bool) -> Any:
         client = self._client
         peer = await self._peer(chat_id)
         plain, entities = markdown.parse(text)
         return await client(functions.messages.SendMessageRequest(
             peer=peer, message=plain, entities=entities or None, random_id=random_id, no_webpage=True,
             reply_to=types.InputReplyToMessage(reply_to_msg_id=reply_to) if reply_to else None,
+            clear_draft=clear_draft or None,
         ))
 
     async def pin_message(self, chat_id: int, msg_id: int) -> None:

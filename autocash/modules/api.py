@@ -128,6 +128,9 @@ class Services:
     outbox: Callable[[OutboundDraft, str], Awaitable[int | None]] | None = None
     # (account, chat, since, limit) -> messages of a dialog, oldest first; a background read (D-AS-3).
     read_dialog: Callable[[int, int, datetime, int], Awaitable[list[RawEvent]]] | None = None
+    # The express lane of the Outbox (D-QK-2), only for modules with `express_path` or `draft_path`:
+    # (account, drafts, module, ttl_s, *, clear_draft=False) -> ExpressRun; raises ExpressRefused.
+    express: Callable[..., Awaitable[Any]] | None = None
 
 
 TraceResolver = Callable[[str], Awaitable[list[str]]]
@@ -151,6 +154,12 @@ class Module(ABC):
     timeout_s: ClassVar[float] = 5.0
     periodic_s: ClassVar[float | None] = None  # run `periodic()` this often, if set
     migrations: ClassVar[Path | None] = None  # the module's own SQL migrations (P-1: not in the core)
+    # An exception module (D-QK-1): `express()` sees every live new message in the Gateway, before the
+    # buffer, and may write through the express lane of the Outbox (Services.express).
+    express_path: ClassVar[bool] = False
+    # An exception module (D-QK2-1): `draft()` sees every change of a cloud draft of a private dialog of
+    # a pool account, in the Gateway; it gets the express lane too.
+    draft_path: ClassVar[bool] = False
     services: Services | None = None
 
     def bind(self, services: Services) -> None:
@@ -164,6 +173,12 @@ class Module(ABC):
 
     async def periodic(self) -> None:  # noqa: B027 - optional hook, a no-op unless the module needs it
         """Periodic work of the module (sweeps, reconciliation); runs outside event handling."""
+
+    def express(self, event: RawEvent, origin: str, received: float) -> None:  # noqa: B027
+        """The express hook (express_path): synchronous, must not block; starts its own task to act."""
+
+    def draft(self, event: RawEvent, received: float) -> None:  # noqa: B027
+        """The draft hook (draft_path): synchronous, must not block; starts its own task to act."""
 
     def wants(self, record: MessageRecord) -> bool:
         """Last filter of delivery; for "unknown" a module gets the message only if it wants it."""

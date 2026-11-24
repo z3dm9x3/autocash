@@ -266,7 +266,12 @@ class App:
         module.bind(Services(self.db, self._reread, self.alerts.logs, lambda: self.store.current,
                              self.outbox.enqueue, lambda account_id: str(self.pool.state(account_id)),
                              self._dialog_history, self.protocols.wake, self._create_outbound,
-                             self._read_dialog))
+                             self._read_dialog,
+                             self._express if module.express_path or module.draft_path else None))
+        if module.express_path:
+            self.gateway.express_hooks.append(module.express)
+        if module.draft_path:
+            self.gateway.draft_hooks.append(module.draft)
         self.gateway.any_chat_commands.update(module.commands_any_chat)
         self.gateway.logs_chat_commands.update(module.commands_logs_chat)
         resolver = module.trace_resolver()
@@ -288,6 +293,11 @@ class App:
         if task_id:
             self.outbox.enqueue([task_id])
         return task_id
+
+    async def _express(self, account_id: int, drafts: list[OutboundDraft], module: str, ttl_s: float, *,
+                       clear_draft: bool = False) -> Any:
+        """The express lane of the Outbox (D-QK-2) for an exception module."""
+        return await self.outbox.express.run(account_id, drafts, module, ttl_s=ttl_s, clear_draft=clear_draft)
 
     async def _read_dialog(self, account_id: int, chat_id: int, since: datetime, limit: int) -> list[RawEvent]:
         """Messages of a dialog from `since`, oldest first, pages of 100 through the limiter of the

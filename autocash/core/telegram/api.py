@@ -9,7 +9,9 @@ from typing import Literal, Protocol, TypeVar
 
 ChatKind = Literal["supergroup", "channel", "group", "private", "unknown"]
 # "joined" / "left": the account itself entered or left the chat (left also covers a deleted chat).
-EventKind = Literal["new", "edit", "delete", "joined", "left"]
+# "draft": the cloud draft of a private dialog of the account changed (text: the draft, msg_id 0); only
+# the draft hooks of the Gateway see it, it is never stored (D-QK2-1).
+EventKind = Literal["new", "edit", "delete", "joined", "left", "draft"]
 T = TypeVar("T")
 
 
@@ -87,7 +89,10 @@ class TelegramClient(Protocol):
         """Returns (or raises TelegramError) when the connection is gone."""
         ...
 
-    async def send_message(self, chat_id: int, text: str, *, random_id: int, reply_to: int | None = None) -> int: ...
+    async def send_message(self, chat_id: int, text: str, *, random_id: int, reply_to: int | None = None,
+                           clear_draft: bool = False) -> int:
+        """`clear_draft`: Telegram also empties the cloud draft of the chat (QuickCast2, D-QK2-2)."""
+        ...
 
     async def pin_message(self, chat_id: int, msg_id: int) -> None:
         """Pin silently, for both sides of a private dialog (Outbox action "pin", D-OBX-5)."""

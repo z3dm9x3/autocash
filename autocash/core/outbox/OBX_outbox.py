@@ -38,6 +38,7 @@ from autocash.core import crashpoints
 from autocash.core.config.loader import ConfigStore
 from autocash.core.gateway.gateway import OwnMessages
 from autocash.core.outbox.OBX_antiflood import Antiflood
+from autocash.core.outbox.OBX_express import Express
 from autocash.core.outbox.OBX_fuse import Fuse
 from autocash.core.outbox.OBX_router import Decision, choose, choose_reader
 from autocash.core.outbox.OBX_tasks import OutboundDraft, insert_outbound
@@ -131,6 +132,8 @@ class Outbox:
         self._routing = 0
         self._sending = 0
         self.antiflood = Antiflood()
+        # The express lane (D-QK-2): writes that skip the queue and the pacing, e.g. QuickKast.
+        self.express = Express(self)
         # The fuse (D-OBX-7): a FloodWait halves the limits of the account once, until a reset by hand.
         self.fuse = Fuse(db, lambda text: self.on_failure(text) if self.on_failure is not None else None)
         self._started = False
@@ -254,6 +257,7 @@ class Outbox:
         await asyncio.gather(*tasks, return_exceptions=True)
         self._router = None
         self._workers.clear()
+        await self.express.close()
 
     # ---- every other Telegram call: reads (D-OBX-7) ----------------------------------------------
     async def read_gate(self, account_id: int, kind: str, method: str) -> None:
